@@ -309,7 +309,7 @@ function ModelModal({
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? '')
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? '')
   const [showKey, setShowKey] = useState(false)
-  const [modelName, setModelName] = useState(initial?.modelName ?? 'gpt-image-1')
+  const [modelName, setModelName] = useState(initial?.modelName ?? 'gpt-image-2')
 
   function handleCompatibility(next: ApiCompatibility) {
     setCompatibility(next)
