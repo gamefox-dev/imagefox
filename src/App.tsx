@@ -5,7 +5,7 @@ import 'react-photo-view/dist/react-photo-view.css'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ApiCompatibility = 'gemini' | 'gpt-image'
+type ApiCompatibility = 'gemini' | 'gpt-image' | 'openrouter'
 
 type ModelSetting = {
   id: string
@@ -159,10 +159,46 @@ function useBlobUrl(blob: Blob | undefined): string {
 // ─── API ──────────────────────────────────────────────────────────────────────
 
 function apiBase(setting: ModelSetting) {
-  const fallback = setting.compatibility === 'gemini'
-    ? 'https://generativelanguage.googleapis.com'
-    : 'https://api.openai.com'
+  const fallback =
+    setting.compatibility === 'gemini'
+      ? 'https://generativelanguage.googleapis.com'
+      : setting.compatibility === 'openrouter'
+        ? 'https://openrouter.ai'
+        : 'https://api.openai.com'
   return (setting.baseUrl || fallback).replace(/\/$/, '')
+}
+
+async function generateOneWithOpenRouter(
+  setting: ModelSetting, prompt: string, ar: string,
+  inputs: InputImage[],
+): Promise<Blob> {
+  type ContentPart =
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  const parts: ContentPart[] = [{ type: 'text', text: prompt }]
+  for (const img of inputs) {
+    const dataUrl = await blobToDataUrl(img.blob)
+    parts.push({ type: 'image_url', image_url: { url: dataUrl } })
+  }
+  const res = await fetch(`${apiBase(setting)}/api/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${setting.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: setting.modelName,
+      modalities: ['image', 'text'],
+      image_config: { aspect_ratio: ar },
+      messages: [{ role: 'user', content: parts }],
+    }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  type ORResponse = { choices?: Array<{ message?: { images?: string[] } }> }
+  const json = (await res.json()) as ORResponse
+  const dataUrl = json.choices?.[0]?.message?.images?.[0]
+  if (!dataUrl) throw new Error('OpenRouter response contained no image')
+  return dataUrlToBlob(dataUrl)
 }
 
 function openAiSize(ar: string) {
@@ -243,6 +279,7 @@ async function generateImages(
   inputs: InputImage[], count: number,
 ): Promise<Blob[]> {
   if (setting.compatibility === 'gpt-image') return generateWithOpenAi(setting, prompt, ar, inputs, count)
+  if (setting.compatibility === 'openrouter') return Promise.all(Array.from({ length: count }, () => generateOneWithOpenRouter(setting, prompt, ar, inputs)))
   return Promise.all(Array.from({ length: count }, () => generateOneWithGemini(setting, prompt, ar, inputs)))
 }
 
@@ -313,7 +350,14 @@ function ModelModal({
 
   function handleCompatibility(next: ApiCompatibility) {
     setCompatibility(next)
-    if (!initial) setModelName(next === 'gemini' ? 'gemini-3.1-flash-image' : 'gpt-image-2')
+    if (!initial) {
+      const defaults: Record<ApiCompatibility, string> = {
+        'gpt-image': 'gpt-image-2',
+        'gemini': 'gemini-3.1-flash-image',
+        'openrouter': 'google/gemini-3.1-flash-image-preview',
+      }
+      setModelName(defaults[next])
+    }
   }
 
   function submit(e: FormEvent) {
@@ -361,13 +405,14 @@ function ModelModal({
             <select value={compatibility} onChange={e => handleCompatibility(e.target.value as ApiCompatibility)} className={input}>
               <option value="gpt-image">OpenAI / gpt-image-compatible</option>
               <option value="gemini">Gemini</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </Field>
           <Field label="Base URL" hint="Optional proxy. Leave blank for default endpoint.">
             <input
               value={baseUrl}
               onChange={e => setBaseUrl(e.target.value)}
-              placeholder={compatibility === 'gemini' ? 'https://generativelanguage.googleapis.com' : 'https://api.openai.com'}
+              placeholder={compatibility === 'gemini' ? 'https://generativelanguage.googleapis.com' : compatibility === 'openrouter' ? 'https://openrouter.ai' : 'https://api.openai.com'}
               className={input}
             />
           </Field>
