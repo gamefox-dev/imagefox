@@ -189,7 +189,7 @@ async function generateOneWithOpenRouter(
     if (raw.url) return raw.url
     if (raw.data) return raw.data.startsWith('data:') ? raw.data : `data:image/png;base64,${raw.data}`
     if (raw.b64_json) return `data:image/png;base64,${raw.b64_json}`
-    throw new Error('OpenRouter image entry had no recognisable data field')
+    throw new Error(`OpenRouter image entry had no recognisable data field. Raw: ${JSON.stringify(raw).slice(0, 500)}`)
   }
   const MODALITY_ERROR = 'No endpoints found that support the requested output modalities'
 
@@ -215,7 +215,10 @@ async function generateOneWithOpenRouter(
     }
     const json = JSON.parse(text) as ORResponse
     const raw = json.choices?.[0]?.message?.images?.[0]
-    if (!raw) throw new Error('OpenRouter response contained no image')
+    if (raw === undefined) {
+      // Dump full response so we can diagnose unexpected shapes
+      throw new Error(`OpenRouter response contained no image. Full response: ${JSON.stringify(json).slice(0, 1000)}`)
+    }
     const dataUrl = extractDataUrl(raw)
     return dataUrlToBlob(dataUrl)
   }
