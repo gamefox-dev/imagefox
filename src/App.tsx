@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { PhotoProvider, PhotoView } from 'react-photo-view'
 import 'react-photo-view/dist/react-photo-view.css'
+import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -509,19 +510,85 @@ const input = 'rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm t
 
 // ─── Models panel ─────────────────────────────────────────────────────────────
 
+type ExportedModel = Omit<ModelSetting, 'id' | 'createdAt' | 'updatedAt'>
+
+function exportModels(settings: ModelSetting[]) {
+  const data: ExportedModel[] = settings.map(({ name, compatibility, baseUrl, apiKey, modelName }) => ({
+    name, compatibility, ...(baseUrl ? { baseUrl } : {}), apiKey, modelName,
+  }))
+  const yaml = yamlDump({ models: data }, { lineWidth: -1 })
+  const blob = new Blob([yaml], { type: 'text/yaml' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'imagefox-models.yaml'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function importModels(file: File): Promise<ModelSetting[]> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const parsed = yamlLoad(String(reader.result)) as { models?: unknown[] }
+        if (!parsed?.models || !Array.isArray(parsed.models))
+          return reject(new Error('YAML must have a top-level "models" list'))
+        const stamp = now()
+        const settings: ModelSetting[] = parsed.models.map((m, i) => {
+          const obj = m as Record<string, unknown>
+          if (!obj.apiKey) throw new Error(`Model #${i + 1} is missing apiKey`)
+          if (!obj.modelName) throw new Error(`Model #${i + 1} is missing modelName`)
+          const compat = obj.compatibility as string
+          if (!['gemini', 'gpt-image', 'openrouter'].includes(compat))
+            throw new Error(`Model #${i + 1} has invalid compatibility "${compat}"`)
+          return {
+            id: uid(),
+            name: String(obj.name || obj.modelName),
+            compatibility: compat as ApiCompatibility,
+            baseUrl: obj.baseUrl ? String(obj.baseUrl) : undefined,
+            apiKey: String(obj.apiKey),
+            modelName: String(obj.modelName),
+            createdAt: stamp,
+            updatedAt: stamp,
+          }
+        })
+        resolve(settings)
+      } catch (err) {
+        reject(err)
+      }
+    }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(file)
+  })
+}
+
 function ModelsPanel({
   settings,
   onAdd,
   onEdit,
   onRemove,
+  onImport,
   onClose,
 }: {
   settings: ModelSetting[]
   onAdd: () => void
   onEdit: (s: ModelSetting) => void
   onRemove: (id: string) => void
+  onImport: (imported: ModelSetting[]) => void
   onClose: () => void
 }) {
+  const importRef = useRef<HTMLInputElement>(null)
+
+  async function handleImportFile(file: File) {
+    try {
+      const imported = await importModels(file)
+      onImport(imported)
+    } catch (err) {
+      alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/50 p-4 pt-16">
       <div className="w-80 rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl">
@@ -544,10 +611,32 @@ function ModelsPanel({
           ))}
           {!settings.length && <p className="px-4 py-3 text-sm text-zinc-500">No models yet.</p>}
         </div>
-        <div className="border-t border-zinc-800 p-3">
+        <div className="flex flex-col gap-2 border-t border-zinc-800 p-3">
           <button onClick={onAdd} className="w-full rounded-lg border border-zinc-700 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white">
             + Add model
           </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => exportModels(settings)}
+              disabled={!settings.length}
+              className="flex-1 rounded-lg border border-zinc-700 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Export YAML
+            </button>
+            <button
+              onClick={() => importRef.current?.click()}
+              className="flex-1 rounded-lg border border-zinc-700 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            >
+              Import YAML
+            </button>
+            <input
+              ref={importRef}
+              type="file"
+              accept=".yaml,.yml,text/yaml"
+              hidden
+              onChange={e => { const f = e.target.files?.[0]; if (f) { void handleImportFile(f); e.target.value = '' } }}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -1082,6 +1171,16 @@ export default function App() {
             onAdd={() => setModal({ kind: 'add-model' })}
             onEdit={s => setModal({ kind: 'edit-model', setting: s })}
             onRemove={id => { removeModel(id) }}
+            onImport={imported => {
+              updateState(s => ({
+                ...s,
+                modelSettings: [
+                  ...s.modelSettings,
+                  ...imported.filter(imp => !s.modelSettings.some(m => m.modelName === imp.modelName && m.compatibility === imp.compatibility)),
+                ],
+              }))
+              setModal({ kind: 'none' })
+            }}
             onClose={() => setModal({ kind: 'none' })}
           />
         )}
