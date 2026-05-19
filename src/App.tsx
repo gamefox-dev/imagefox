@@ -181,7 +181,16 @@ async function generateOneWithOpenRouter(
     parts.push({ type: 'image_url', image_url: { url: dataUrl } })
   }
 
-  type ORResponse = { choices?: Array<{ message?: { images?: string[] } }> }
+  type ORImage = string | { url?: string; data?: string; b64_json?: string }
+  type ORResponse = { choices?: Array<{ message?: { images?: ORImage[] } }> }
+
+  function extractDataUrl(raw: ORImage): string {
+    if (typeof raw === 'string') return raw
+    if (raw.url) return raw.url
+    if (raw.data) return raw.data.startsWith('data:') ? raw.data : `data:image/png;base64,${raw.data}`
+    if (raw.b64_json) return `data:image/png;base64,${raw.b64_json}`
+    throw new Error('OpenRouter image entry had no recognisable data field')
+  }
   const MODALITY_ERROR = 'No endpoints found that support the requested output modalities'
 
   async function attempt(modalities: string[]): Promise<Blob> {
@@ -205,8 +214,9 @@ async function generateOneWithOpenRouter(
       throw new Error(text)
     }
     const json = JSON.parse(text) as ORResponse
-    const dataUrl = json.choices?.[0]?.message?.images?.[0]
-    if (!dataUrl) throw new Error('OpenRouter response contained no image')
+    const raw = json.choices?.[0]?.message?.images?.[0]
+    if (!raw) throw new Error('OpenRouter response contained no image')
+    const dataUrl = extractDataUrl(raw)
     return dataUrlToBlob(dataUrl)
   }
 
@@ -228,17 +238,17 @@ function openAiSize(ar: string) {
   return '1024x1024'
 }
 
-async function generateWithOpenAi(
+async function generateOneWithOpenAi(
   setting: ModelSetting, prompt: string, ar: string,
-  inputs: InputImage[], count: number,
-): Promise<Blob[]> {
+  inputs: InputImage[],
+): Promise<Blob> {
   const headers = { Authorization: `Bearer ${setting.apiKey}` }
   let res: Response
   if (inputs.length) {
     const form = new FormData()
     form.append('model', setting.modelName)
     form.append('prompt', prompt)
-    form.append('n', String(count))
+    form.append('n', '1')
     form.append('size', openAiSize(ar))
     inputs.forEach((img, i) => {
       form.append('image[]', new File([img.blob], img.name || `input-${i}.png`, { type: img.type || img.blob.type || 'image/png' }))
@@ -248,16 +258,16 @@ async function generateWithOpenAi(
     res = await fetch(`${apiBase(setting)}/v1/images/generations`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: setting.modelName, prompt, n: count, size: openAiSize(ar) }),
+      body: JSON.stringify({ model: setting.modelName, prompt, n: 1, size: openAiSize(ar) }),
     })
   }
   if (!res.ok) throw new Error(await res.text())
   const json = (await res.json()) as { data?: Array<{ b64_json?: string; url?: string }> }
-  return Promise.all((json.data ?? []).map(async (item) => {
-    if (item.b64_json) return dataUrlToBlob(`data:image/png;base64,${item.b64_json}`)
-    if (item.url) return urlToBlob(item.url)
-    throw new Error('Response had no b64_json or url')
-  }))
+  const item = json.data?.[0]
+  if (!item) throw new Error('Response had no image data')
+  if (item.b64_json) return dataUrlToBlob(`data:image/png;base64,${item.b64_json}`)
+  if (item.url) return urlToBlob(item.url)
+  throw new Error('Response had no b64_json or url')
 }
 
 async function generateOneWithGemini(
@@ -299,9 +309,12 @@ async function generateImages(
   setting: ModelSetting, prompt: string, ar: string,
   inputs: InputImage[], count: number,
 ): Promise<Blob[]> {
-  if (setting.compatibility === 'gpt-image') return generateWithOpenAi(setting, prompt, ar, inputs, count)
-  if (setting.compatibility === 'openrouter') return Promise.all(Array.from({ length: count }, () => generateOneWithOpenRouter(setting, prompt, ar, inputs)))
-  return Promise.all(Array.from({ length: count }, () => generateOneWithGemini(setting, prompt, ar, inputs)))
+  const one = () => {
+    if (setting.compatibility === 'gpt-image') return generateOneWithOpenAi(setting, prompt, ar, inputs)
+    if (setting.compatibility === 'openrouter') return generateOneWithOpenRouter(setting, prompt, ar, inputs)
+    return generateOneWithGemini(setting, prompt, ar, inputs)
+  }
+  return Promise.all(Array.from({ length: count }, one))
 }
 
 // ─── Small components ─────────────────────────────────────────────────────────
