@@ -180,25 +180,46 @@ async function generateOneWithOpenRouter(
     const dataUrl = await blobToDataUrl(img.blob)
     parts.push({ type: 'image_url', image_url: { url: dataUrl } })
   }
-  const res = await fetch(`${apiBase(setting)}/api/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${setting.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: setting.modelName,
-      modalities: ['image', 'text'],
-      image_config: { aspect_ratio: ar },
-      messages: [{ role: 'user', content: parts }],
-    }),
-  })
-  if (!res.ok) throw new Error(await res.text())
+
   type ORResponse = { choices?: Array<{ message?: { images?: string[] } }> }
-  const json = (await res.json()) as ORResponse
-  const dataUrl = json.choices?.[0]?.message?.images?.[0]
-  if (!dataUrl) throw new Error('OpenRouter response contained no image')
-  return dataUrlToBlob(dataUrl)
+  const MODALITY_ERROR = 'No endpoints found that support the requested output modalities'
+
+  async function attempt(modalities: string[]): Promise<Blob> {
+    const res = await fetch(`${apiBase(setting)}/api/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${setting.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: setting.modelName,
+        modalities,
+        image_config: { aspect_ratio: ar },
+        messages: [{ role: 'user', content: parts }],
+      }),
+    })
+    const text = await res.text()
+    if (!res.ok) {
+      // If modality combo not supported, bubble a special marker
+      if (text.includes(MODALITY_ERROR)) throw Object.assign(new Error(text), { modalityError: true })
+      throw new Error(text)
+    }
+    const json = JSON.parse(text) as ORResponse
+    const dataUrl = json.choices?.[0]?.message?.images?.[0]
+    if (!dataUrl) throw new Error('OpenRouter response contained no image')
+    return dataUrlToBlob(dataUrl)
+  }
+
+  try {
+    // Most image-only models (Flux, Recraft, Sourceful…) only accept ["image"]
+    return await attempt(['image'])
+  } catch (err) {
+    if ((err as { modalityError?: boolean }).modalityError) {
+      // Multimodal models (Gemini) need ["image", "text"]
+      return await attempt(['image', 'text'])
+    }
+    throw err
+  }
 }
 
 function openAiSize(ar: string) {
