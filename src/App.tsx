@@ -128,6 +128,16 @@ async function urlToBlob(url: string): Promise<Blob> {
 // and revokes the previous one. Avoids the "blob loaded → url valid briefly"
 // problem by NOT using useMemo (which doesn't run cleanup between renders).
 
+function useElapsedSeconds(startMs: number, active: boolean): number {
+  const [secs, setSecs] = useState(() => Math.floor((Date.now() - startMs) / 1000))
+  useEffect(() => {
+    if (!active) return
+    const id = setInterval(() => setSecs(Math.floor((Date.now() - startMs) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [startMs, active])
+  return secs
+}
+
 function useBlobUrl(blob: Blob | undefined): string {
   const [url, setUrl] = useState(() => (blob ? URL.createObjectURL(blob) : ''))
   const prevBlob = useRef(blob)
@@ -266,6 +276,16 @@ function LightboxThumb({
         <img src={url} className="h-full w-full object-cover" draggable={false} />
       </div>
     </PhotoView>
+  )
+}
+
+function GeneratingOverlay({ createdAt }: { createdAt: number }) {
+  const secs = useElapsedSeconds(createdAt, true)
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-200" />
+      <span className="tabular-nums text-xs text-zinc-500">{secs}s</span>
+    </div>
   )
 }
 
@@ -788,12 +808,7 @@ export default function App() {
                     className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
                   >
                     <div className="relative aspect-square bg-zinc-950">
-                      {img.status === 'loading' && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-                          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-200" />
-                          <span className="text-xs text-zinc-500">Generating…</span>
-                        </div>
-                      )}
+                      {img.status === 'loading' && <GeneratingOverlay createdAt={img.createdAt} />}
                       {img.status === 'error' && (
                         <div className="absolute inset-0 overflow-auto p-3">
                           <div className="text-xs font-semibold text-red-400 mb-1">Failed</div>
