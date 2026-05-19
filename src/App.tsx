@@ -181,11 +181,12 @@ async function generateOneWithOpenRouter(
     parts.push({ type: 'image_url', image_url: { url: dataUrl } })
   }
 
-  type ORImage = string | { url?: string; data?: string; b64_json?: string }
+  type ORImage = string | { url?: string; data?: string; b64_json?: string; image_url?: { url: string } }
   type ORResponse = { choices?: Array<{ message?: { images?: ORImage[] } }> }
 
   function extractDataUrl(raw: ORImage): string {
     if (typeof raw === 'string') return raw
+    if (raw.image_url?.url) return raw.image_url.url
     if (raw.url) return raw.url
     if (raw.data) return raw.data.startsWith('data:') ? raw.data : `data:image/png;base64,${raw.data}`
     if (raw.b64_json) return `data:image/png;base64,${raw.b64_json}`
