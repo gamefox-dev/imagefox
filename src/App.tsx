@@ -619,6 +619,22 @@ export default function App() {
     setInputImages(img.inputImages)
   }
 
+  function deleteImage(id: string) {
+    if (!confirm('Delete this image?')) return
+    updateState(s => ({ ...s, images: s.images.filter(img => img.id !== id) }))
+  }
+
+  function downloadImage(img: ImageJob) {
+    if (!img.blob) return
+    const ext = (img.mimeType || img.blob.type || 'image/png').split('/')[1] ?? 'png'
+    const url = URL.createObjectURL(img.blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `imagefox-${img.id.slice(0, 8)}.${ext}`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   function continueImage(img: ImageJob) {
     if (!img.blob) return
     setInputImages([{
@@ -811,6 +827,13 @@ export default function App() {
                               <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 2v9M2 6.5h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
                             </button>
                             <button
+                              title="Download image"
+                              onClick={() => downloadImage(img)}
+                              className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-white"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 2v8m0 0-3-3m3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+                            </button>
+                            <button
                               title="Continue editing (multi-turn)"
                               onClick={() => continueImage(img)}
                               className="flex h-7 flex-1 items-center justify-center rounded-md border border-zinc-700 text-xs text-zinc-400 hover:border-zinc-500 hover:text-white"
@@ -819,6 +842,13 @@ export default function App() {
                             </button>
                           </>
                         )}
+                        <button
+                          title="Delete image"
+                          onClick={() => deleteImage(img.id)}
+                          className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-700 text-zinc-600 hover:border-red-800 hover:bg-red-950 hover:text-red-400"
+                        >
+                          <svg width="11" height="11" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -836,7 +866,7 @@ export default function App() {
               className="fixed inset-x-0 bottom-0 z-30 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur-lg"
             >
               <div
-                className={`mx-auto max-w-6xl px-4 py-3 transition-colors ${isDraggingOver ? 'bg-zinc-800/50' : ''}`}
+                className={`mx-auto max-w-2xl px-4 py-3 transition-colors ${isDraggingOver ? 'bg-zinc-800/50' : ''}`}
               >
                 {isDraggingOver && (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-t-xl border-2 border-dashed border-zinc-500 text-sm text-zinc-400">
@@ -933,6 +963,14 @@ export default function App() {
                     />
                     <span className="shrink-0 text-zinc-600">10</span>
                   </label>
+
+                  <button
+                    type="button"
+                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('1:1'); setImageCount(1) }}
+                    className="text-xs text-zinc-600 hover:text-zinc-300"
+                  >
+                    Clear
+                  </button>
                 </div>
               </div>
             </form>
