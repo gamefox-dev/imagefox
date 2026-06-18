@@ -34,6 +34,8 @@ type InputImage = {
   sourceImageId?: string
 }
 
+type ImageResolution = '0.5K' | '1K' | '2K' | '4K'
+
 type ImageJob = {
   id: string
   projectId: string
@@ -42,6 +44,7 @@ type ImageJob = {
   updatedAt: number
   prompt: string
   aspectRatio: string
+  resolution: ImageResolution
   modelSettingId: string
   inputImages: InputImage[]
   blob?: Blob
@@ -98,7 +101,8 @@ async function saveState(state: StudioDb): Promise<void> {
 
 const uid = () => crypto.randomUUID()
 const now = () => Date.now()
-const aspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
+const aspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9']
+const imageResolutions: ImageResolution[] = ['0.5K', '1K', '2K', '4K']
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -171,7 +175,7 @@ function apiBase(setting: ModelSetting) {
 
 async function generateOneWithOpenRouter(
   setting: ModelSetting, prompt: string, ar: string,
-  inputs: InputImage[],
+  resolution: ImageResolution, inputs: InputImage[],
 ): Promise<Blob> {
   type ContentPart =
     | { type: 'text'; text: string }
@@ -205,7 +209,7 @@ async function generateOneWithOpenRouter(
       body: JSON.stringify({
         model: setting.modelName,
         modalities,
-        image_config: { aspect_ratio: ar },
+        image_config: { aspect_ratio: ar, image_size: resolution },
         messages: [{ role: 'user', content: parts }],
       }),
     })
@@ -237,15 +241,51 @@ async function generateOneWithOpenRouter(
   }
 }
 
-function openAiSize(ar: string) {
-  if (['16:9', '3:2', '4:3'].includes(ar)) return '1536x1024'
-  if (['9:16', '2:3', '3:4'].includes(ar)) return '1024x1536'
-  return '1024x1024'
+function parseAspectRatio(ar: string): { w: number; h: number } {
+  const [w, h] = ar.split(':').map(Number)
+  if (!w || !h) return { w: 1, h: 1 }
+  return { w, h }
+}
+
+function roundToMultiple(value: number, multiple: number) {
+  return Math.max(multiple, Math.round(value / multiple) * multiple)
+}
+
+function openAiSize(ar: string, resolution: ImageResolution) {
+  const { w: ratioW, h: ratioH } = parseAspectRatio(ar)
+  const ratio = ratioW / ratioH
+  const targetLongEdge: Record<ImageResolution, number> = { '0.5K': 512, '1K': 1024, '2K': 2048, '4K': 3840 }
+  const maxEdge = 3840
+  const minPixels = 655_360
+  const maxPixels = 8_294_400
+
+  let longEdge = Math.min(targetLongEdge[resolution], maxEdge)
+  let width = ratio >= 1 ? longEdge : longEdge * ratio
+  let height = ratio >= 1 ? longEdge / ratio : longEdge
+
+  // gpt-image-2 accepts flexible sizes, but both edges must be multiples of 16
+  // and the total pixel count must stay in its allowed range.
+  width = roundToMultiple(width, 16)
+  height = roundToMultiple(height, 16)
+
+  while (width * height < minPixels && Math.max(width, height) < maxEdge) {
+    const scale = 1.05
+    width = roundToMultiple(width * scale, 16)
+    height = roundToMultiple(height * scale, 16)
+  }
+
+  while (width * height > maxPixels || Math.max(width, height) > maxEdge) {
+    const scale = 0.98
+    width = roundToMultiple(width * scale, 16)
+    height = roundToMultiple(height * scale, 16)
+  }
+
+  return `${width}x${height}`
 }
 
 async function generateOneWithOpenAi(
   setting: ModelSetting, prompt: string, ar: string,
-  inputs: InputImage[],
+  resolution: ImageResolution, inputs: InputImage[],
 ): Promise<Blob> {
   const headers = { Authorization: `Bearer ${setting.apiKey}` }
   let res: Response
@@ -254,7 +294,7 @@ async function generateOneWithOpenAi(
     form.append('model', setting.modelName)
     form.append('prompt', prompt)
     form.append('n', '1')
-    form.append('size', openAiSize(ar))
+    form.append('size', openAiSize(ar, resolution))
     inputs.forEach((img, i) => {
       form.append('image[]', new File([img.blob], img.name || `input-${i}.png`, { type: img.type || img.blob.type || 'image/png' }))
     })
@@ -263,7 +303,7 @@ async function generateOneWithOpenAi(
     res = await fetch(`${apiBase(setting)}/v1/images/generations`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: setting.modelName, prompt, n: 1, size: openAiSize(ar) }),
+      body: JSON.stringify({ model: setting.modelName, prompt, n: 1, size: openAiSize(ar, resolution) }),
     })
   }
   if (!res.ok) throw new Error(await res.text())
@@ -276,8 +316,9 @@ async function generateOneWithOpenAi(
 }
 
 async function generateOneWithGemini(
-  setting: ModelSetting, prompt: string, ar: string, inputs: InputImage[],
+  setting: ModelSetting, prompt: string, ar: string, resolution: ImageResolution, inputs: InputImage[],
 ): Promise<Blob> {
+  void resolution
   type Part = { text: string } | { inline_data: { mime_type: string; data: string } }
   const parts: Part[] = [{ text: prompt }]
   for (const img of inputs) {
@@ -312,12 +353,12 @@ async function generateOneWithGemini(
 
 async function generateImages(
   setting: ModelSetting, prompt: string, ar: string,
-  inputs: InputImage[], count: number,
+  resolution: ImageResolution, inputs: InputImage[], count: number,
 ): Promise<Blob[]> {
   const one = () => {
-    if (setting.compatibility === 'gpt-image') return generateOneWithOpenAi(setting, prompt, ar, inputs)
-    if (setting.compatibility === 'openrouter') return generateOneWithOpenRouter(setting, prompt, ar, inputs)
-    return generateOneWithGemini(setting, prompt, ar, inputs)
+    if (setting.compatibility === 'gpt-image') return generateOneWithOpenAi(setting, prompt, ar, resolution, inputs)
+    if (setting.compatibility === 'openrouter') return generateOneWithOpenRouter(setting, prompt, ar, resolution, inputs)
+    return generateOneWithGemini(setting, prompt, ar, resolution, inputs)
   }
   return Promise.all(Array.from({ length: count }, one))
 }
@@ -659,6 +700,7 @@ export default function App() {
   const [selectedModelId, setSelectedModelId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState('1:1')
+  const [resolution, setResolution] = useState<ImageResolution>('1K')
   const [imageCount, setImageCount] = useState(1)
   const [inputImages, setInputImages] = useState<InputImage[]>([])
   const [isDraggingOver, setIsDraggingOver] = useState(false)
@@ -678,6 +720,7 @@ export default function App() {
           // Normalize inputImages blobs: IDB round-trip can return Blobs with empty type
           return {
             ...base,
+            resolution: base.resolution ?? '1K',
             inputImages: (base.inputImages ?? []).map(ii => ({
               ...ii,
               type: ii.type || (ii.blob instanceof Blob ? ii.blob.type : '') || 'image/png',
@@ -760,20 +803,21 @@ export default function App() {
 
   async function submitGeneration(
     e?: FormEvent,
-    override?: { prompt: string; inputImages: InputImage[]; aspectRatio: string; count?: number },
+    override?: { prompt: string; inputImages: InputImage[]; aspectRatio: string; resolution?: ImageResolution; count?: number },
   ) {
     e?.preventDefault()
     if (!project || !selectedModel) return
     const reqPrompt = (override?.prompt ?? prompt).trim()
     const reqInputs = override?.inputImages ?? inputImages
     const reqAr = override?.aspectRatio ?? aspectRatio
+    const reqResolution = override?.resolution ?? resolution
     const count = override?.count ?? imageCount
     if (!reqPrompt) return alert('Enter a prompt first.')
     const stamp = now()
     const placeholders: ImageJob[] = Array.from({ length: count }, () => ({
       id: uid(), projectId: project.id, status: 'loading',
       createdAt: stamp, updatedAt: stamp, prompt: reqPrompt,
-      aspectRatio: reqAr, modelSettingId: selectedModel.id, inputImages: reqInputs,
+      aspectRatio: reqAr, resolution: reqResolution, modelSettingId: selectedModel.id, inputImages: reqInputs,
     }))
     updateState(s => ({
       ...s,
@@ -781,7 +825,7 @@ export default function App() {
       projects: s.projects.map(p => p.id === project.id ? { ...p, updatedAt: stamp } : p),
     }))
     try {
-      const blobs = await generateImages(selectedModel, reqPrompt, reqAr, reqInputs, count)
+      const blobs = await generateImages(selectedModel, reqPrompt, reqAr, reqResolution, reqInputs, count)
       updateState(s => ({
         ...s,
         images: s.images.map(img => {
@@ -808,6 +852,7 @@ export default function App() {
   function redo(img: ImageJob) {
     setPrompt(img.prompt)
     setAspectRatio(img.aspectRatio)
+    setResolution(img.resolution ?? '1K')
     setInputImages(img.inputImages)
   }
 
@@ -838,6 +883,7 @@ export default function App() {
     }])
     setPrompt(img.prompt)
     setAspectRatio(img.aspectRatio)
+    setResolution(img.resolution ?? '1K')
   }
 
   // Drag-and-drop into the form
@@ -1137,6 +1183,17 @@ export default function App() {
                     </select>
                   </label>
 
+                  <label className="flex items-center gap-2 text-xs text-zinc-500">
+                    Resolution
+                    <select
+                      value={resolution}
+                      onChange={e => setResolution(e.target.value as ImageResolution)}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
+                    >
+                      {imageResolutions.map(r => <option key={r}>{r}</option>)}
+                    </select>
+                  </label>
+
                   <label className="flex flex-1 items-center gap-3 text-xs text-zinc-500">
                     <span className="shrink-0">Count: {imageCount}</span>
                     <input
@@ -1153,7 +1210,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('1:1'); setImageCount(1) }}
+                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('1:1'); setResolution('1K'); setImageCount(1) }}
                     className="text-xs text-zinc-600 hover:text-zinc-300"
                   >
                     Clear
