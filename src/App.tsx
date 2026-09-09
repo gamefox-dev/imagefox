@@ -3,10 +3,13 @@ import type { FormEvent } from 'react'
 import { PhotoProvider, PhotoView } from 'react-photo-view'
 import 'react-photo-view/dist/react-photo-view.css'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
+import { FAL_BASE_URL, FAL_DEFAULT_MODEL, generateFalImage } from './fal'
+import { falImageSize, formatDuration, geminiImageConfig, openAiSize, openRouterImageConfig } from './image-options'
+import type { ImageResolution } from './image-options'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ApiCompatibility = 'gemini' | 'gpt-image' | 'openrouter'
+type ApiCompatibility = 'gemini' | 'gpt-image' | 'openrouter' | 'fal'
 
 type ModelSetting = {
   id: string
@@ -34,8 +37,6 @@ type InputImage = {
   sourceImageId?: string
 }
 
-type ImageResolution = '0.5K' | '1K' | '2K' | '4K'
-
 type ImageJob = {
   id: string
   projectId: string
@@ -43,6 +44,8 @@ type ImageJob = {
   createdAt: number
   updatedAt: number
   prompt: string
+  modelName?: string
+  durationMs?: number
   aspectRatio: string
   resolution: ImageResolution
   modelSettingId: string
@@ -101,7 +104,7 @@ async function saveState(state: StudioDb): Promise<void> {
 
 const uid = () => crypto.randomUUID()
 const now = () => Date.now()
-const aspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9']
+const aspectRatios = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9']
 const imageResolutions: ImageResolution[] = ['0.5K', '1K', '2K', '4K']
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -169,8 +172,23 @@ function apiBase(setting: ModelSetting) {
       ? 'https://generativelanguage.googleapis.com'
       : setting.compatibility === 'openrouter'
         ? 'https://openrouter.ai'
-        : 'https://api.openai.com'
+        : setting.compatibility === 'fal'
+          ? FAL_BASE_URL
+          : 'https://api.openai.com'
   return (setting.baseUrl || fallback).replace(/\/$/, '')
+}
+
+async function generateOneWithFal(
+  setting: ModelSetting, prompt: string, ar: string, resolution: ImageResolution, inputs: InputImage[],
+): Promise<Blob> {
+  return generateFalImage({
+    baseUrl: setting.baseUrl,
+    apiKey: setting.apiKey,
+    modelName: setting.modelName,
+    prompt,
+    imageUrls: await Promise.all(inputs.map(img => blobToDataUrl(img.blob))),
+    imageSize: falImageSize(ar, resolution),
+  })
 }
 
 async function generateOneWithOpenRouter(
@@ -209,7 +227,7 @@ async function generateOneWithOpenRouter(
       body: JSON.stringify({
         model: setting.modelName,
         modalities,
-        image_config: { aspect_ratio: ar, image_size: resolution },
+        ...openRouterImageConfig(ar, resolution),
         messages: [{ role: 'user', content: parts }],
       }),
     })
@@ -239,48 +257,6 @@ async function generateOneWithOpenRouter(
     }
     throw err
   }
-}
-
-function parseAspectRatio(ar: string): { w: number; h: number } {
-  const [w, h] = ar.split(':').map(Number)
-  if (!w || !h) return { w: 1, h: 1 }
-  return { w, h }
-}
-
-function roundToMultiple(value: number, multiple: number) {
-  return Math.max(multiple, Math.round(value / multiple) * multiple)
-}
-
-function openAiSize(ar: string, resolution: ImageResolution) {
-  const { w: ratioW, h: ratioH } = parseAspectRatio(ar)
-  const ratio = ratioW / ratioH
-  const targetLongEdge: Record<ImageResolution, number> = { '0.5K': 512, '1K': 1024, '2K': 2048, '4K': 3840 }
-  const maxEdge = 3840
-  const minPixels = 655_360
-  const maxPixels = 8_294_400
-
-  let longEdge = Math.min(targetLongEdge[resolution], maxEdge)
-  let width = ratio >= 1 ? longEdge : longEdge * ratio
-  let height = ratio >= 1 ? longEdge / ratio : longEdge
-
-  // gpt-image-2 accepts flexible sizes, but both edges must be multiples of 16
-  // and the total pixel count must stay in its allowed range.
-  width = roundToMultiple(width, 16)
-  height = roundToMultiple(height, 16)
-
-  while (width * height < minPixels && Math.max(width, height) < maxEdge) {
-    const scale = 1.05
-    width = roundToMultiple(width * scale, 16)
-    height = roundToMultiple(height * scale, 16)
-  }
-
-  while (width * height > maxPixels || Math.max(width, height) > maxEdge) {
-    const scale = 0.98
-    width = roundToMultiple(width * scale, 16)
-    height = roundToMultiple(height * scale, 16)
-  }
-
-  return `${width}x${height}`
 }
 
 async function generateOneWithOpenAi(
@@ -333,7 +309,7 @@ async function generateOneWithGemini(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ role: 'user', parts }],
-        generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: { aspectRatio: ar } },
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'], ...geminiImageConfig(ar) },
       }),
     },
   )
@@ -351,16 +327,14 @@ async function generateOneWithGemini(
   return dataUrlToBlob(`data:${mime};base64,${data}`)
 }
 
-async function generateImages(
+async function generateOneImage(
   setting: ModelSetting, prompt: string, ar: string,
-  resolution: ImageResolution, inputs: InputImage[], count: number,
-): Promise<Blob[]> {
-  const one = () => {
-    if (setting.compatibility === 'gpt-image') return generateOneWithOpenAi(setting, prompt, ar, resolution, inputs)
-    if (setting.compatibility === 'openrouter') return generateOneWithOpenRouter(setting, prompt, ar, resolution, inputs)
-    return generateOneWithGemini(setting, prompt, ar, resolution, inputs)
-  }
-  return Promise.all(Array.from({ length: count }, one))
+  resolution: ImageResolution, inputs: InputImage[],
+): Promise<Blob> {
+  if (setting.compatibility === 'gpt-image') return generateOneWithOpenAi(setting, prompt, ar, resolution, inputs)
+  if (setting.compatibility === 'openrouter') return generateOneWithOpenRouter(setting, prompt, ar, resolution, inputs)
+  if (setting.compatibility === 'fal') return generateOneWithFal(setting, prompt, ar, resolution, inputs)
+  return generateOneWithGemini(setting, prompt, ar, resolution, inputs)
 }
 
 // ─── Small components ─────────────────────────────────────────────────────────
@@ -396,11 +370,12 @@ function LightboxThumb({
   )
 }
 
-function GeneratingOverlay({ createdAt }: { createdAt: number }) {
+function GeneratingOverlay({ createdAt, modelName }: { createdAt: number; modelName?: string }) {
   const secs = useElapsedSeconds(createdAt, true)
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center">
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-200" />
+      <span className="max-w-full break-all text-xs text-zinc-300" title={modelName}>{modelName ?? 'Generating'}</span>
       <span className="tabular-nums text-xs text-zinc-500">{secs}s</span>
     </div>
   )
@@ -435,6 +410,7 @@ function ModelModal({
         'gpt-image': 'gpt-image-2',
         'gemini': 'gemini-3.1-flash-image',
         'openrouter': 'google/gemini-3.1-flash-image-preview',
+        'fal': FAL_DEFAULT_MODEL,
       }
       setModelName(defaults[next])
     }
@@ -486,13 +462,14 @@ function ModelModal({
               <option value="gpt-image">OpenAI / gpt-image-compatible</option>
               <option value="gemini">Gemini</option>
               <option value="openrouter">OpenRouter</option>
+              <option value="fal">fal.ai</option>
             </select>
           </Field>
           <Field label="Base URL" hint="Optional proxy. Leave blank for default endpoint.">
             <input
               value={baseUrl}
               onChange={e => setBaseUrl(e.target.value)}
-              placeholder={compatibility === 'gemini' ? 'https://generativelanguage.googleapis.com' : compatibility === 'openrouter' ? 'https://openrouter.ai' : 'https://api.openai.com'}
+              placeholder={compatibility === 'gemini' ? 'https://generativelanguage.googleapis.com' : compatibility === 'openrouter' ? 'https://openrouter.ai' : compatibility === 'fal' ? FAL_BASE_URL : 'https://api.openai.com'}
               className={input}
             />
           </Field>
@@ -519,9 +496,17 @@ function ModelModal({
               </button>
             </div>
           </Field>
-          <Field label="Model name">
+          <Field label={compatibility === 'fal' ? 'Model endpoint ID' : 'Model name'}>
             <input required value={modelName} onChange={e => setModelName(e.target.value)} className={input} />
           </Field>
+          {compatibility === 'fal' && (
+            <p className="text-xs leading-relaxed text-zinc-400">
+              Enter the exact endpoint ID, not a URL. For GPT Image 2.5, use
+              {' '}openai/gpt-image-2.5/flare for text-to-image or append /edit for image inputs.
+              Endpoints are not switched automatically. Supports prompt, image_urls,
+              image_size (width/height), and images output; available sizes vary by model.
+            </p>
+          )}
         </div>
 
         <button className="mt-6 w-full rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-zinc-100 active:bg-zinc-200">
@@ -581,7 +566,7 @@ function importModels(file: File): Promise<ModelSetting[]> {
           if (!obj.apiKey) throw new Error(`Model #${i + 1} is missing apiKey`)
           if (!obj.modelName) throw new Error(`Model #${i + 1} is missing modelName`)
           const compat = obj.compatibility as string
-          if (!['gemini', 'gpt-image', 'openrouter'].includes(compat))
+          if (!['gemini', 'gpt-image', 'openrouter', 'fal'].includes(compat))
             throw new Error(`Model #${i + 1} has invalid compatibility "${compat}"`)
           return {
             id: uid(),
@@ -699,7 +684,7 @@ export default function App() {
   const [modal, setModal] = useState<ModalState>({ kind: 'none' })
   const [selectedModelId, setSelectedModelId] = useState('')
   const [prompt, setPrompt] = useState('')
-  const [aspectRatio, setAspectRatio] = useState('1:1')
+  const [aspectRatio, setAspectRatio] = useState('auto')
   const [resolution, setResolution] = useState<ImageResolution>('1K')
   const [imageCount, setImageCount] = useState(1)
   const [inputImages, setInputImages] = useState<InputImage[]>([])
@@ -720,6 +705,7 @@ export default function App() {
           // Normalize inputImages blobs: IDB round-trip can return Blobs with empty type
           return {
             ...base,
+            modelName: base.modelName ?? stored.modelSettings.find(m => m.id === base.modelSettingId)?.modelName,
             resolution: base.resolution ?? '1K',
             inputImages: (base.inputImages ?? []).map(ii => ({
               ...ii,
@@ -817,6 +803,7 @@ export default function App() {
     const placeholders: ImageJob[] = Array.from({ length: count }, () => ({
       id: uid(), projectId: project.id, status: 'loading',
       createdAt: stamp, updatedAt: stamp, prompt: reqPrompt,
+      modelName: selectedModel.modelName,
       aspectRatio: reqAr, resolution: reqResolution, modelSettingId: selectedModel.id, inputImages: reqInputs,
     }))
     updateState(s => ({
@@ -824,29 +811,26 @@ export default function App() {
       images: [...placeholders, ...s.images],
       projects: s.projects.map(p => p.id === project.id ? { ...p, updatedAt: stamp } : p),
     }))
-    try {
-      const blobs = await generateImages(selectedModel, reqPrompt, reqAr, reqResolution, reqInputs, count)
+    // Settle each card independently: fast images shouldn't inherit the slowest
+    // request's duration, and one failure must not discard successful siblings.
+    await Promise.all(placeholders.map(async placeholder => {
+      const started = performance.now()
+      let result: Partial<ImageJob>
+      try {
+        const blob = await generateOneImage(selectedModel, reqPrompt, reqAr, reqResolution, reqInputs)
+        result = { status: 'generated', blob, mimeType: blob.type || 'image/png' }
+      } catch (err) {
+        result = { status: 'error', error: err instanceof Error ? err.message : String(err) }
+      }
+      const durationMs = performance.now() - started
+      const updatedAt = now()
       updateState(s => ({
         ...s,
-        images: s.images.map(img => {
-          const idx = placeholders.findIndex(p => p.id === img.id)
-          if (idx === -1) return img
-          const blob = blobs[idx]
-          if (!blob) return { ...img, status: 'error', error: `No image returned for slot ${idx + 1}.`, updatedAt: now() }
-          return { ...img, status: 'generated', blob, mimeType: blob.type || 'image/png', updatedAt: now() }
-        }),
+        images: s.images.map(img => img.id === placeholder.id
+          ? { ...img, ...result, durationMs, updatedAt }
+          : img),
       }))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      updateState(s => ({
-        ...s,
-        images: s.images.map(img =>
-          placeholders.some(p => p.id === img.id)
-            ? { ...img, status: 'error', error: msg, updatedAt: now() }
-            : img,
-        ),
-      }))
-    }
+    }))
   }
 
   function redo(img: ImageJob) {
@@ -1026,7 +1010,7 @@ export default function App() {
                     className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
                   >
                     <div className="relative aspect-square bg-zinc-950">
-                      {img.status === 'loading' && <GeneratingOverlay createdAt={img.createdAt} />}
+                      {img.status === 'loading' && <GeneratingOverlay createdAt={img.createdAt} modelName={img.modelName} />}
                       {img.status === 'error' && (
                         <div className="absolute inset-0 overflow-auto p-3">
                           <div className="text-xs font-semibold text-red-400 mb-1">Failed</div>
@@ -1041,6 +1025,22 @@ export default function App() {
                       )}
                     </div>
                     <div className="p-2.5">
+                      <div className="mb-1 flex items-start justify-between gap-2 text-[11px] text-zinc-400">
+                        <span className="min-w-0 break-all" title={img.modelName ?? 'Model setting no longer available'}>
+                          {img.modelName ?? 'Unknown model'}
+                        </span>
+                        {img.status !== 'loading' && (img.durationMs !== undefined || img.status === 'generated') && (
+                          <span
+                            className="shrink-0 tabular-nums text-zinc-500"
+                            title={img.durationMs === undefined
+                              ? 'Estimated from legacy timestamps; may include waiting for other images in the batch'
+                              : 'Elapsed time including upload, queue wait, generation, and download'}
+                          >
+                            {img.durationMs === undefined ? '~' : ''}
+                            {formatDuration(img.durationMs ?? Math.max(0, img.updatedAt - img.createdAt))}
+                          </span>
+                        )}
+                      </div>
                       <p className="line-clamp-1 text-xs text-zinc-500 mb-2">{img.prompt}</p>
                       <div className="flex gap-1.5">
                         <button
@@ -1179,7 +1179,7 @@ export default function App() {
                       onChange={e => setAspectRatio(e.target.value)}
                       className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
                     >
-                      {aspectRatios.map(r => <option key={r}>{r}</option>)}
+                      {aspectRatios.map(r => <option key={r} value={r}>{r === 'auto' ? 'Auto' : r}</option>)}
                     </select>
                   </label>
 
@@ -1187,8 +1187,10 @@ export default function App() {
                     Resolution
                     <select
                       value={resolution}
+                      disabled={aspectRatio === 'auto'}
+                      title={aspectRatio === 'auto' ? 'Auto lets the model choose dimensions from the inputs or prompt' : undefined}
                       onChange={e => setResolution(e.target.value as ImageResolution)}
-                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
                     >
                       {imageResolutions.map(r => <option key={r}>{r}</option>)}
                     </select>
@@ -1210,7 +1212,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('1:1'); setResolution('1K'); setImageCount(1) }}
+                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('auto'); setResolution('1K'); setImageCount(1) }}
                     className="text-xs text-zinc-600 hover:text-zinc-300"
                   >
                     Clear
