@@ -5,7 +5,7 @@ import type { ImageResolution } from '../src/image-options.ts'
 
 const resolutions: ImageResolution[] = ['0.5K', '1K', '2K', '4K']
 
-test('auto sends literal sizes for OpenAI/fal and omits overrides for Gemini/OpenRouter chat', () => {
+test('auto sends literal sizes for OpenAI/fal and omits overrides for Gemini/OpenRouter Images API', () => {
   for (const resolution of resolutions) {
     assert.equal(openAiSize('auto', resolution), 'auto')
     assert.equal(falImageSize('auto', resolution), 'auto')
@@ -18,7 +18,7 @@ test('explicit ratios retain provider sizing options', () => {
   assert.equal(openAiSize('1:1', '1K'), '1024x1024')
   assert.deepEqual(falImageSize('16:9', '2K'), { width: 2048, height: 1152 })
   assert.deepEqual(geminiImageConfig('3:4'), { imageConfig: { aspectRatio: '3:4' } })
-  assert.deepEqual(openRouterImageConfig('16:9', '4K'), { image_config: { aspect_ratio: '16:9', image_size: '4K' } })
+  assert.deepEqual(openRouterImageConfig('16:9', '4K'), { aspect_ratio: '16:9', resolution: '4K' })
 })
 
 test('explicit GPT Image dimensions stay within supported constraints', () => {

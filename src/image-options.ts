@@ -33,10 +33,15 @@ export function falImageSize(ar: string, resolution: ImageResolution) {
   return { width, height }
 }
 
-// Let chat-completions models use their native sizing defaults. The documented
-// literal "auto" for OpenRouter's Images API is not assumed for this chat API.
+// Omit sizing in Auto mode so providers without a literal "auto" capability
+// (including Gemini) retain their defaults. Images API tiers use "512", not "0.5K".
 export function openRouterImageConfig(ar: string, resolution: ImageResolution) {
-  return ar === 'auto' ? {} : { image_config: { aspect_ratio: ar, image_size: resolution } }
+  return ar === 'auto' ? {} : { aspect_ratio: ar, resolution: resolution === '0.5K' ? '512' : resolution }
+}
+
+export function backgroundOptions(transparency?: boolean): { background?: 'transparent' | 'opaque'; output_format?: 'png' } {
+  if (transparency === undefined) return {}
+  return transparency ? { background: 'transparent', output_format: 'png' } : { background: 'opaque' }
 }
 
 // Gemini's documented default matches input dimensions (or chooses a square

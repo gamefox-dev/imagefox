@@ -1,5 +1,57 @@
 # ImageFox
 
+## Transparency and safety options
+
+The generation toolbar has a **Transparency** selector:
+
+- **Unspecified** (default): omit the background parameter and use provider defaults.
+- **True (transparent)**: send `background: "transparent"` and `output_format: "png"`.
+- **False (opaque)**: send `background: "opaque"`.
+
+This applies to both generation and editing with OpenAI, OpenRouter, and compatible
+fal endpoints. The selected model must support `background`; this is not automatic
+background removal. The direct Gemini adapter does not expose this option. Each job
+stores its transparency choice; redo/continue restore it, and Clear resets it to
+Unspecified. Existing jobs without the field remain Unspecified.
+
+In **Models → Add/Edit model**, **Disable / reduce safety** defaults to unchecked
+(provider defaults). Its meaning depends on the provider:
+
+| Provider | Behavior when checked |
+| --- | --- |
+| OpenAI | Sends `moderation: "low"` for both generation and edits. This reduces filtering; OpenAI does not offer a full safety-off switch. |
+| fal.ai | Sends `enable_safety_checker: false`. Only use for endpoints documenting this parameter (e.g. FLUX.1 dev). Disabling the checker requires fal account authorization; otherwise checks still run. Other upstream restrictions still apply. |
+| OpenRouter | Fetches the model's Images endpoint capabilities and sends `moderation: "low"` and/or `enable_safety_checker: false` under `provider.options[provider_slug]`, only when advertised in `allowed_passthrough_parameters`. Routing is limited to eligible providers. Unsupported models or failed capability lookups produce an error before generation rather than silently ignoring the option. |
+
+fal's GPT Image 2.5 schemas expose transparency but **no safety override**, so the
+safety checkbox is disabled for fal OpenAI endpoints. It is also disabled for the
+direct Gemini adapter. OpenRouter's OpenAI GPT Image endpoints currently advertise
+`moderation`; its Gemini image endpoint does not advertise a supported safety
+control. Safety preferences persist with model settings and round-trip through YAML
+as the optional boolean `disableSafety` (string values are rejected).
+
+Provider references:
+- [OpenAI image generation and moderation](https://developers.openai.com/api/docs/guides/image-generation)
+- [OpenAI image edits](https://developers.openai.com/api/reference/resources/images/methods/edit/)
+- [fal GPT Image 2.5 Flare generation schema](https://fal.ai/models/openai/gpt-image-2.5/flare/text-to-image/api)
+- [fal GPT Image 2.5 Flare edit schema](https://fal.ai/models/openai/gpt-image-2.5/flare/edit/api)
+- [fal FLUX.1 dev safety checker](https://fal.ai/models/fal-ai/flux/dev/api)
+- [OpenRouter Images API and capability discovery](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
+
+## OpenRouter Images API
+
+All OpenRouter generation requests now use **`POST /api/v1/images`**, including
+GPT Image 2.5 Flare/Sunburst and Gemini image models, rather than chat completions.
+Reference images are passed as data URLs in `input_references`; output is decoded
+from `data[0].b64_json`, preserving `media_type` (PNG when omitted). Hosted image
+URLs are also supported and downloaded without API credentials.
+
+Explicit sizes use the Images API's top-level `aspect_ratio` and `resolution`
+parameters (`0.5K` in the UI maps to `512`). Auto omits sizing overrides. There are
+no automatic generation retries or chat fallbacks. Custom proxies must support
+`/api/v1/images` and, when safety reduction is requested, the image-model endpoint
+capability API under `/api/v1/images/models/{model}/endpoints`.
+
 ## fal.ai compatibility
 
 In **Models → Add model**, select **fal.ai**, enter your fal API key, and use an
@@ -54,7 +106,7 @@ model setting when available and show a `~`-prefixed estimated time from timesta
 - `bun run dev` — start the development server.
 - `bun run build` — type-check and build.
 - `bun run lint` — lint the codebase.
-- `bun run test` — mocked fal HTTP tests (requires Node.js 22.18+).
+- `bun run test` — provider HTTP and image-option tests (requires Node.js 22.18+).
 
 ## Vite template notes
 

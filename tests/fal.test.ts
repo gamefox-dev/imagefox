@@ -67,6 +67,28 @@ test('sends auto size unchanged for image editing', async t => {
   assert.deepEqual(submitted?.image_urls, options.imageUrls)
 })
 
+for (const transparency of [undefined, false, true]) {
+  test(`fal sends transparency=${transparency} with an explicit safety opt-out`, async t => {
+    const responses = [json({ ...queue, status: 'COMPLETED' }), json(output), new Response('image')]
+    t.mock.method(globalThis, 'fetch', async (_url: string, init?: RequestInit) => {
+      if (init?.body) {
+        const body = JSON.parse(init.body as string)
+        assert.equal(body.background, transparency === undefined ? undefined : transparency ? 'transparent' : 'opaque')
+        assert.equal(body.output_format, transparency ? 'png' : undefined)
+        assert.equal(body.enable_safety_checker, false)
+      }
+      return responses.shift()!
+    })
+    await generateFalImage({ ...options, modelName: 'fal-ai/example', transparency, disableSafety: true })
+  })
+}
+
+test('fal OpenAI rejects undocumented safety overrides before submitting', async t => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Must not submit') })
+  await assert.rejects(generateFalImage({ ...options, disableSafety: true }), /do not document a safety override/)
+  assert.equal(fetch.mock.callCount(), 0)
+})
+
 test('downloads data URI output', async t => {
   const nativeFetch = globalThis.fetch
   const responses = [json({ ...queue, status: 'COMPLETED' }), json({ images: [{ url: 'data:image/png;base64,aGVsbG8=' }] })]

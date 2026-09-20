@@ -4,7 +4,8 @@ import { PhotoProvider, PhotoView } from 'react-photo-view'
 import 'react-photo-view/dist/react-photo-view.css'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import { FAL_BASE_URL, FAL_DEFAULT_MODEL, generateFalImage } from './fal'
-import { falImageSize, formatDuration, geminiImageConfig, openAiSize, openRouterImageConfig } from './image-options'
+import { falImageSize, formatDuration, geminiImageConfig } from './image-options'
+import { generateOpenAiImage, generateOpenRouterImage } from './image-api'
 import type { ImageResolution } from './image-options'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -18,6 +19,7 @@ type ModelSetting = {
   baseUrl?: string
   apiKey: string
   modelName: string
+  disableSafety?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -48,6 +50,7 @@ type ImageJob = {
   durationMs?: number
   aspectRatio: string
   resolution: ImageResolution
+  transparency?: boolean
   modelSettingId: string
   inputImages: InputImage[]
   blob?: Blob
@@ -125,12 +128,6 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime })
 }
 
-async function urlToBlob(url: string): Promise<Blob> {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Could not download generated image (${res.status})`)
-  return res.blob()
-}
-
 // ─── Object URL hook ──────────────────────────────────────────────────────────
 // Stable: creates a new object URL only when the blob identity changes,
 // and revokes the previous one. Avoids the "blob loaded → url valid briefly"
@@ -179,7 +176,7 @@ function apiBase(setting: ModelSetting) {
 }
 
 async function generateOneWithFal(
-  setting: ModelSetting, prompt: string, ar: string, resolution: ImageResolution, inputs: InputImage[],
+  setting: ModelSetting, prompt: string, ar: string, resolution: ImageResolution, inputs: InputImage[], transparency?: boolean,
 ): Promise<Blob> {
   return generateFalImage({
     baseUrl: setting.baseUrl,
@@ -188,107 +185,9 @@ async function generateOneWithFal(
     prompt,
     imageUrls: await Promise.all(inputs.map(img => blobToDataUrl(img.blob))),
     imageSize: falImageSize(ar, resolution),
+    transparency,
+    disableSafety: setting.disableSafety,
   })
-}
-
-async function generateOneWithOpenRouter(
-  setting: ModelSetting, prompt: string, ar: string,
-  resolution: ImageResolution, inputs: InputImage[],
-): Promise<Blob> {
-  type ContentPart =
-    | { type: 'text'; text: string }
-    | { type: 'image_url'; image_url: { url: string } }
-  const parts: ContentPart[] = [{ type: 'text', text: prompt }]
-  for (const img of inputs) {
-    const dataUrl = await blobToDataUrl(img.blob)
-    parts.push({ type: 'image_url', image_url: { url: dataUrl } })
-  }
-
-  type ORImage = string | { url?: string; data?: string; b64_json?: string; image_url?: { url: string } }
-  type ORResponse = { choices?: Array<{ message?: { images?: ORImage[] } }> }
-
-  function extractDataUrl(raw: ORImage): string {
-    if (typeof raw === 'string') return raw
-    if (raw.image_url?.url) return raw.image_url.url
-    if (raw.url) return raw.url
-    if (raw.data) return raw.data.startsWith('data:') ? raw.data : `data:image/png;base64,${raw.data}`
-    if (raw.b64_json) return `data:image/png;base64,${raw.b64_json}`
-    throw new Error(`OpenRouter image entry had no recognisable data field. Raw: ${JSON.stringify(raw).slice(0, 500)}`)
-  }
-  const MODALITY_ERROR = 'No endpoints found that support the requested output modalities'
-
-  async function attempt(modalities: string[]): Promise<Blob> {
-    const res = await fetch(`${apiBase(setting)}/api/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${setting.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: setting.modelName,
-        modalities,
-        ...openRouterImageConfig(ar, resolution),
-        messages: [{ role: 'user', content: parts }],
-      }),
-    })
-    const text = await res.text()
-    if (!res.ok) {
-      // If modality combo not supported, bubble a special marker
-      if (text.includes(MODALITY_ERROR)) throw Object.assign(new Error(text), { modalityError: true })
-      throw new Error(text)
-    }
-    const json = JSON.parse(text) as ORResponse
-    const raw = json.choices?.[0]?.message?.images?.[0]
-    if (raw === undefined) {
-      // Dump full response so we can diagnose unexpected shapes
-      throw new Error(`OpenRouter response contained no image. Full response: ${JSON.stringify(json).slice(0, 1000)}`)
-    }
-    const dataUrl = extractDataUrl(raw)
-    return dataUrlToBlob(dataUrl)
-  }
-
-  try {
-    // Most image-only models (Flux, Recraft, Sourceful…) only accept ["image"]
-    return await attempt(['image'])
-  } catch (err) {
-    if ((err as { modalityError?: boolean }).modalityError) {
-      // Multimodal models (Gemini) need ["image", "text"]
-      return await attempt(['image', 'text'])
-    }
-    throw err
-  }
-}
-
-async function generateOneWithOpenAi(
-  setting: ModelSetting, prompt: string, ar: string,
-  resolution: ImageResolution, inputs: InputImage[],
-): Promise<Blob> {
-  const headers = { Authorization: `Bearer ${setting.apiKey}` }
-  let res: Response
-  if (inputs.length) {
-    const form = new FormData()
-    form.append('model', setting.modelName)
-    form.append('prompt', prompt)
-    form.append('n', '1')
-    form.append('size', openAiSize(ar, resolution))
-    inputs.forEach((img, i) => {
-      form.append('image[]', new File([img.blob], img.name || `input-${i}.png`, { type: img.type || img.blob.type || 'image/png' }))
-    })
-    res = await fetch(`${apiBase(setting)}/v1/images/edits`, { method: 'POST', headers, body: form })
-  } else {
-    res = await fetch(`${apiBase(setting)}/v1/images/generations`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: setting.modelName, prompt, n: 1, size: openAiSize(ar, resolution) }),
-    })
-  }
-  if (!res.ok) throw new Error(await res.text())
-  const json = (await res.json()) as { data?: Array<{ b64_json?: string; url?: string }> }
-  const item = json.data?.[0]
-  if (!item) throw new Error('Response had no image data')
-  if (item.b64_json) return dataUrlToBlob(`data:image/png;base64,${item.b64_json}`)
-  if (item.url) return urlToBlob(item.url)
-  throw new Error('Response had no b64_json or url')
 }
 
 async function generateOneWithGemini(
@@ -329,11 +228,14 @@ async function generateOneWithGemini(
 
 async function generateOneImage(
   setting: ModelSetting, prompt: string, ar: string,
-  resolution: ImageResolution, inputs: InputImage[],
+  resolution: ImageResolution, inputs: InputImage[], transparency?: boolean,
 ): Promise<Blob> {
-  if (setting.compatibility === 'gpt-image') return generateOneWithOpenAi(setting, prompt, ar, resolution, inputs)
-  if (setting.compatibility === 'openrouter') return generateOneWithOpenRouter(setting, prompt, ar, resolution, inputs)
-  if (setting.compatibility === 'fal') return generateOneWithFal(setting, prompt, ar, resolution, inputs)
+  const request = { ...setting, prompt, aspectRatio: ar, resolution, transparency }
+  if (setting.compatibility === 'gpt-image') return generateOpenAiImage({ ...request, inputs })
+  if (setting.compatibility === 'openrouter') return generateOpenRouterImage({
+    ...request, imageUrls: await Promise.all(inputs.map(img => blobToDataUrl(img.blob))),
+  })
+  if (setting.compatibility === 'fal') return generateOneWithFal(setting, prompt, ar, resolution, inputs, transparency)
   return generateOneWithGemini(setting, prompt, ar, resolution, inputs)
 }
 
@@ -402,6 +304,8 @@ function ModelModal({
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? '')
   const [showKey, setShowKey] = useState(false)
   const [modelName, setModelName] = useState(initial?.modelName ?? 'gpt-image-2')
+  const [disableSafety, setDisableSafety] = useState(initial?.disableSafety ?? false)
+  const safetyUnavailable = compatibility === 'gemini' || (compatibility === 'fal' && modelName.trim().replace(/^\/+/, '').startsWith('openai/'))
 
   function handleCompatibility(next: ApiCompatibility) {
     setCompatibility(next)
@@ -426,6 +330,7 @@ function ModelModal({
       baseUrl: baseUrl.trim() || undefined,
       apiKey: apiKey.trim(),
       modelName: modelName.trim(),
+      disableSafety: !safetyUnavailable && disableSafety,
       createdAt: initial?.createdAt ?? stamp,
       updatedAt: stamp,
     })
@@ -435,7 +340,7 @@ function ModelModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
       <form
         onSubmit={submit}
-        className="w-full max-w-lg rounded-2xl border border-zinc-700 bg-zinc-900 p-6 shadow-2xl"
+        className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-zinc-700 bg-zinc-900 p-6 shadow-2xl"
       >
         <div className="mb-6 flex items-start justify-between gap-3">
           <div>
@@ -499,6 +404,20 @@ function ModelModal({
           <Field label={compatibility === 'fal' ? 'Model endpoint ID' : 'Model name'}>
             <input required value={modelName} onChange={e => setModelName(e.target.value)} className={input} />
           </Field>
+          <label className="flex items-center gap-2 text-sm text-zinc-300">
+            <input type="checkbox" checked={!safetyUnavailable && disableSafety} disabled={safetyUnavailable}
+              onChange={e => setDisableSafety(e.target.checked)} className="accent-white" />
+            Disable / reduce safety
+          </label>
+          <p className="text-xs leading-relaxed text-zinc-400">
+            {safetyUnavailable
+              ? 'No supported safety override for this adapter/model. Provider defaults apply.'
+              : compatibility === 'gpt-image'
+                ? 'Uses moderation: low for generation and edits. OpenAI does not allow disabling all safety filtering.'
+                : compatibility === 'fal'
+                  ? 'Sends enable_safety_checker: false. Only use with endpoints documenting this field; fal requires account authorization. Other provider restrictions still apply.'
+                  : 'Checks endpoint capabilities, then uses enable_safety_checker: false or moderation: low via provider options. Unsupported models report an error; low is not fully off.'}
+          </p>
           {compatibility === 'fal' && (
             <p className="text-xs leading-relaxed text-zinc-400">
               Enter the exact endpoint ID, not a URL. For GPT Image 2.5, use
@@ -539,8 +458,9 @@ const input = 'rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm t
 type ExportedModel = Omit<ModelSetting, 'id' | 'createdAt' | 'updatedAt'>
 
 function exportModels(settings: ModelSetting[]) {
-  const data: ExportedModel[] = settings.map(({ name, compatibility, baseUrl, apiKey, modelName }) => ({
+  const data: ExportedModel[] = settings.map(({ name, compatibility, baseUrl, apiKey, modelName, disableSafety }) => ({
     name, compatibility, ...(baseUrl ? { baseUrl } : {}), apiKey, modelName,
+    ...(disableSafety !== undefined ? { disableSafety } : {}),
   }))
   const yaml = yamlDump({ models: data }, { lineWidth: -1 })
   const blob = new Blob([yaml], { type: 'text/yaml' })
@@ -565,6 +485,8 @@ function importModels(file: File): Promise<ModelSetting[]> {
           const obj = m as Record<string, unknown>
           if (!obj.apiKey) throw new Error(`Model #${i + 1} is missing apiKey`)
           if (!obj.modelName) throw new Error(`Model #${i + 1} is missing modelName`)
+          if (obj.disableSafety !== undefined && typeof obj.disableSafety !== 'boolean')
+            throw new Error(`Model #${i + 1} disableSafety must be a boolean`)
           const compat = obj.compatibility as string
           if (!['gemini', 'gpt-image', 'openrouter', 'fal'].includes(compat))
             throw new Error(`Model #${i + 1} has invalid compatibility "${compat}"`)
@@ -575,6 +497,7 @@ function importModels(file: File): Promise<ModelSetting[]> {
             baseUrl: obj.baseUrl ? String(obj.baseUrl) : undefined,
             apiKey: String(obj.apiKey),
             modelName: String(obj.modelName),
+            disableSafety: obj.disableSafety as boolean | undefined,
             createdAt: stamp,
             updatedAt: stamp,
           }
@@ -686,6 +609,7 @@ export default function App() {
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState('auto')
   const [resolution, setResolution] = useState<ImageResolution>('1K')
+  const [transparency, setTransparency] = useState<boolean | undefined>(undefined)
   const [imageCount, setImageCount] = useState(1)
   const [inputImages, setInputImages] = useState<InputImage[]>([])
   const [isDraggingOver, setIsDraggingOver] = useState(false)
@@ -789,7 +713,7 @@ export default function App() {
 
   async function submitGeneration(
     e?: FormEvent,
-    override?: { prompt: string; inputImages: InputImage[]; aspectRatio: string; resolution?: ImageResolution; count?: number },
+    override?: { prompt: string; inputImages: InputImage[]; aspectRatio: string; resolution?: ImageResolution; transparency?: boolean; count?: number },
   ) {
     e?.preventDefault()
     if (!project || !selectedModel) return
@@ -797,6 +721,7 @@ export default function App() {
     const reqInputs = override?.inputImages ?? inputImages
     const reqAr = override?.aspectRatio ?? aspectRatio
     const reqResolution = override?.resolution ?? resolution
+    const reqTransparency = selectedModel.compatibility === 'gemini' ? undefined : override ? override.transparency : transparency
     const count = override?.count ?? imageCount
     if (!reqPrompt) return alert('Enter a prompt first.')
     const stamp = now()
@@ -804,7 +729,7 @@ export default function App() {
       id: uid(), projectId: project.id, status: 'loading',
       createdAt: stamp, updatedAt: stamp, prompt: reqPrompt,
       modelName: selectedModel.modelName,
-      aspectRatio: reqAr, resolution: reqResolution, modelSettingId: selectedModel.id, inputImages: reqInputs,
+      aspectRatio: reqAr, resolution: reqResolution, transparency: reqTransparency, modelSettingId: selectedModel.id, inputImages: reqInputs,
     }))
     updateState(s => ({
       ...s,
@@ -817,7 +742,7 @@ export default function App() {
       const started = performance.now()
       let result: Partial<ImageJob>
       try {
-        const blob = await generateOneImage(selectedModel, reqPrompt, reqAr, reqResolution, reqInputs)
+        const blob = await generateOneImage(selectedModel, reqPrompt, reqAr, reqResolution, reqInputs, reqTransparency)
         result = { status: 'generated', blob, mimeType: blob.type || 'image/png' }
       } catch (err) {
         result = { status: 'error', error: err instanceof Error ? err.message : String(err) }
@@ -837,6 +762,7 @@ export default function App() {
     setPrompt(img.prompt)
     setAspectRatio(img.aspectRatio)
     setResolution(img.resolution ?? '1K')
+    setTransparency(img.transparency)
     setInputImages(img.inputImages)
   }
 
@@ -868,6 +794,7 @@ export default function App() {
     setPrompt(img.prompt)
     setAspectRatio(img.aspectRatio)
     setResolution(img.resolution ?? '1K')
+    setTransparency(img.transparency)
   }
 
   // Drag-and-drop into the form
@@ -1196,6 +1123,21 @@ export default function App() {
                     </select>
                   </label>
 
+                  <label className="flex items-center gap-2 text-xs text-zinc-500">
+                    Transparency
+                    <select
+                      value={transparency === undefined ? 'unspecified' : String(transparency)}
+                      disabled={selectedModel?.compatibility === 'gemini'}
+                      title={selectedModel?.compatibility === 'gemini' ? 'Not supported by the direct Gemini adapter' : 'Requires model support for background; true requests PNG output'}
+                      onChange={e => setTransparency(e.target.value === 'unspecified' ? undefined : e.target.value === 'true')}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
+                    >
+                      <option value="unspecified">Unspecified</option>
+                      <option value="true">True (transparent)</option>
+                      <option value="false">False (opaque)</option>
+                    </select>
+                  </label>
+
                   <label className="flex flex-1 items-center gap-3 text-xs text-zinc-500">
                     <span className="shrink-0">Count: {imageCount}</span>
                     <input
@@ -1212,7 +1154,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('auto'); setResolution('1K'); setImageCount(1) }}
+                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('auto'); setResolution('1K'); setTransparency(undefined); setImageCount(1) }}
                     className="text-xs text-zinc-600 hover:text-zinc-300"
                   >
                     Clear
