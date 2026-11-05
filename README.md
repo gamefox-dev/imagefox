@@ -72,12 +72,16 @@ capability API under `/api/v1/images/models/{model}/endpoints`.
 In **Models → Add model**, select **fal.ai**, enter your fal API key, and use an
 exact model endpoint ID (not the model page URL):
 
-- Image editing: `openai/gpt-image-2.6/flare/edit` (the default; requires input images).
+- Image editing: `openai/gpt-image-2.6/flare/edit` (the default; auto-selects text-to-image without inputs).
 - Text-to-image: `openai/gpt-image-2.6/flare/text-to-image`.
 - Other endpoints with the same schema, such as `fal-ai/flux/dev`, can also be configured.
 
-The endpoint is used as entered; adding images does not automatically append `/edit`,
-and omitting images does not remove it. Configure separate models for separate endpoints.
+For GPT Image 2.6 Flare/Sunburst, ImageFox selects `/edit` whenever reference images
+are attached, including GIF requests, and `/text-to-image` when there are no inputs.
+You can configure the family ID or either endpoint; routing preserves the variant.
+Sending references to a text-to-image endpoint is not equivalent to editing and can
+ignore the references or return a still image instead of the intended animation.
+Other fal model families keep the exact endpoint as entered; their edit paths vary.
 
 Requests run directly in the browser using `fetch` and `Authorization: Key …`.
 The default base URL is `https://queue.fal.run`; an optional queue-compatible proxy

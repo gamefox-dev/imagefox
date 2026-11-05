@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { PhotoProvider, PhotoView } from 'react-photo-view'
 import 'react-photo-view/dist/react-photo-view.css'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
-import { FAL_BASE_URL, FAL_DEFAULT_MODEL, generateFalImage } from './fal'
+import { FAL_BASE_URL, FAL_DEFAULT_MODEL, falModelEndpoint, generateFalImage } from './fal'
 import { falImageSize, formatDuration, geminiImageConfig } from './image-options'
 import { generateOpenAiImage, generateOpenRouterImage } from './image-api'
 import { fetchModelNames } from './model-catalog'
@@ -509,7 +509,9 @@ function ModelModal({
               Enter the exact endpoint ID, not a URL. For GPT Image 2.6, use
               {' '}openai/gpt-image-2.6/flare/text-to-image for text-to-image or use
               openai/gpt-image-2.6/flare/edit for image inputs.
-              Endpoints are not switched automatically. Supports prompt, image_urls,
+              GPT Image 2.6 Flare/Sunburst automatically use /edit with reference images
+              (including GIF output), or /text-to-image without them. Other endpoint IDs
+              are used unchanged. Supports prompt, image_urls,
               image_size (width/height), and images output; available sizes vary by model.
             </p>
           )}
@@ -859,7 +861,9 @@ export default function App() {
     const placeholders: ImageJob[] = Array.from({ length: count }, () => ({
       id: uid(), projectId: project.id, status: 'loading',
       createdAt: stamp, updatedAt: stamp, prompt: reqPrompt,
-      modelName: selectedModel.modelName,
+      modelName: selectedModel.compatibility === 'fal'
+        ? falModelEndpoint(selectedModel.modelName, reqInputs.length > 0)
+        : selectedModel.modelName,
       aspectRatio: reqAr,
       resolution: reqResolution,
       quality: reqQuality,

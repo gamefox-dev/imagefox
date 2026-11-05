@@ -4,6 +4,14 @@ import type { ImageOutputFormat, ImageQuality } from './image-options.ts'
 export const FAL_BASE_URL = 'https://queue.fal.run'
 export const FAL_DEFAULT_MODEL = 'openai/gpt-image-2.6/flare/edit'
 
+// Only route this known endpoint family. Other fal models have different edit
+// conventions and must keep their explicitly configured endpoint.
+export function falModelEndpoint(modelName: string, hasInputs: boolean): string {
+  const endpoint = modelName.trim().replace(/^\/+|\/+$/g, '')
+  const gptImage26 = endpoint.match(/^(openai\/gpt-image-2\.6\/(?:flare|sunburst))(?:\/(?:edit|text-to-image))?$/)
+  return gptImage26 ? `${gptImage26[1]}/${hasInputs ? 'edit' : 'text-to-image'}` : endpoint
+}
+
 type FalImageRequest = {
   baseUrl?: string
   apiKey: string
@@ -30,13 +38,13 @@ type FalOutput = {
   images?: Array<{ url?: string; content_type?: string }>
 }
 
-// Use the queue rather than holding a single inference connection open. Endpoint
-// IDs are used verbatim: edit paths differ between models and cannot be inferred.
+// Use the queue rather than holding a single inference connection open. GPT
+// Image 2.6 reference requests must use /edit, including animated GIF output.
 export async function generateFalImage({
   baseUrl, apiKey, modelName, prompt, imageUrls, imageSize, transparency, quality, outputFormat, frameCount, frameDurationMs, disableSafety,
 }: FalImageRequest): Promise<Blob> {
   const base = (baseUrl?.trim() || FAL_BASE_URL).replace(/\/+$/, '')
-  const endpoint = modelName.trim().replace(/^\/+|\/+$/g, '')
+  const endpoint = falModelEndpoint(modelName, imageUrls.length > 0)
   if (!/^[\w-]+(?:\/[\w.-]+)+$/.test(endpoint) || endpoint.split('/').some(p => p === '.' || p === '..')) {
     throw new Error('fal.ai model name must be an endpoint ID, e.g. openai/gpt-image-2.6/flare/edit (not a URL).')
   }

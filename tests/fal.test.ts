@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { generateFalImage } from '../src/fal.ts'
+import { falModelEndpoint, generateFalImage } from '../src/fal.ts'
 
 const options = {
   apiKey: 'test-key',
@@ -53,6 +53,50 @@ test('text-only request omits image_urls, preserves endpoint and routes follow-u
   assert.equal(calls[0].url, 'https://proxy.example/fal/fal-ai/flux/dev')
   assert.equal('image_urls' in JSON.parse(calls[0].init?.body as string), false)
   assert.equal(calls[1].url, 'https://proxy.example/fal/openai/gpt-image-2.5/requests/request-1')
+})
+
+for (const variant of ['flare', 'sunburst']) {
+  for (const suffix of ['', '/text-to-image', '/edit']) {
+    for (const hasInputs of [false, true]) {
+      test(`GPT Image 2.6 ${variant}${suffix} routes GIF ${hasInputs ? 'references to edit' : 'text to generation'}`, async t => {
+        const root = `openai/gpt-image-2.6/${variant}`
+        const referenceImages = hasInputs ? options.imageUrls : []
+        const status = {
+          status: 'COMPLETED',
+          status_url: `https://queue.fal.run/${root}/requests/gif-1/status`,
+          response_url: `https://queue.fal.run/${root}/requests/gif-1`,
+        }
+        const responses = [json(status), json({ images: [{ url: 'https://fal.media/animation.gif', content_type: 'image/gif' }] }), new Response('GIF89a')]
+        const fetch = t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+          if (init?.body) {
+            assert.equal(url, `https://queue.fal.run/${root}/${hasInputs ? 'edit' : 'text-to-image'}`)
+            assert.deepEqual(JSON.parse(init.body as string), {
+              prompt: options.prompt,
+              ...(hasInputs ? { image_urls: referenceImages } : {}),
+              image_size: 'auto', num_images: 1, quality: 'high',
+              output_format: 'gif', frame_count: 9, frame_duration_ms: 200,
+            })
+          }
+          if (url === 'https://fal.media/animation.gif') assert.equal(init?.headers, undefined)
+          return responses.shift()!
+        })
+        const blob = await generateFalImage({
+          ...options, modelName: root + suffix, imageUrls: referenceImages,
+          imageSize: 'auto', quality: 'high', outputFormat: 'gif', frameCount: 9, frameDurationMs: 200,
+        })
+        assert.equal(blob.type, 'image/gif')
+        assert.equal(await blob.text(), 'GIF89a')
+        assert.equal(fetch.mock.callCount(), 3)
+      })
+    }
+  }
+}
+
+test('routing leaves other fal endpoint families unchanged', () => {
+  for (const endpoint of ['fal-ai/flux/dev', 'openai/gpt-image-2.5/flare/edit', 'openai/gpt-image-2.6/flare/other']) {
+    for (const hasInputs of [false, true]) assert.equal(falModelEndpoint(endpoint, hasInputs), endpoint)
+  }
+  assert.equal(falModelEndpoint('/openai/gpt-image-2.6/flare/text-to-image/', true), 'openai/gpt-image-2.6/flare/edit')
 })
 
 test('sends auto size unchanged for image editing', async t => {
