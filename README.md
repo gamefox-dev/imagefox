@@ -10,9 +10,9 @@ The model name field has a **Load models** autocomplete. It queries the provider
 
 The default OpenAI model is `gpt-image-2.6`, which uses automatic routing. You can also configure `gpt-image-2.6-sunburst` for detailed work or `gpt-image-2.6-flare` for faster iteration. OpenRouter model IDs use the `openai/` prefix.
 
-The generation toolbar exposes the documented GPT Image 2.6 quality tiers: `auto`, `low`, `medium`, `high`, `xhigh`, and `max`. It also supports PNG, JPEG, WebP, and animated GIF output. GIF generation is text-to-image only and adds controls for 2–16 frames and 20–2000 ms frame duration on the OpenAI Images API; the API rounds frame duration to 10 ms. GIF output uses the documented default of 9 frames and 200 ms when unchanged.
+The generation toolbar exposes the documented GPT Image 2.6 quality tiers: `auto`, `low`, `medium`, `high`, `xhigh`, and `max`. It also supports PNG, JPEG, WebP, and animated GIF output. GIF generation adds controls for 2–16 frames and 20–2000 ms frame duration on the OpenAI Images API (the API rounds frame duration to 10 ms); OpenRouter and fal support GIFs with image references where their model endpoint supports it. GIF output uses the documented default of 9 frames and 200 ms when unchanged.
 
-Quality and format controls are sent to OpenAI, OpenRouter, and fal GPT Image-compatible endpoints. Provider adapters that do not document these fields leave them disabled. GIF requests use `output_format: "gif"`, `frame_count`, and `frame_duration_ms`; edits reject GIF because the Image API does not support animated GIF output for edits.
+Quality and format controls are sent to OpenAI, OpenRouter, and fal GPT Image-compatible endpoints. Provider adapters that do not document these fields leave them disabled. Direct OpenAI image edits cannot return GIFs because the OpenAI Image edit endpoint does not support animated GIF output; OpenRouter and fal image-reference requests use their image API capabilities.
 
 ## Transparency and safety options
 

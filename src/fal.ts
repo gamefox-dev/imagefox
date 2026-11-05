@@ -41,7 +41,7 @@ export async function generateFalImage({
     throw new Error('fal.ai model name must be an endpoint ID, e.g. openai/gpt-image-2.6/flare/edit (not a URL).')
   }
 
-  const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0)
+  const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0, 64, true)
   if (disableSafety && endpoint.startsWith('openai/') && !endpoint.startsWith('openai/gpt-image-2.6/')) {
     throw new Error('fal OpenAI endpoints do not document a safety override. Turn off “Disable / reduce safety” in Models.')
   }

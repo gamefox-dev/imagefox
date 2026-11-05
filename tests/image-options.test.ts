@@ -42,7 +42,10 @@ test('passes quality and GIF animation options to image requests', () => {
 })
 
 test('rejects GIF edits and invalid GIF settings', () => {
-  assert.throws(() => imageOutputOptions({ outputFormat: 'gif' }, true), /only supported for text-to-image/)
+  assert.throws(() => imageOutputOptions({ outputFormat: 'gif' }, true), /does not support GIF output with image references/)
+  assert.deepEqual(imageOutputOptions({ outputFormat: 'gif', frameCount: 2 }, true, 64, true), {
+    output_format: 'gif', frame_count: 2, frame_duration_ms: 200,
+  })
   assert.throws(() => imageOutputOptions({ outputFormat: 'gif', frameCount: 17 }, false, 16), /between 2 and 16/)
   assert.throws(() => imageOutputOptions({ outputFormat: 'gif', frameDurationMs: 19 }), /between 20 and 2000/)
 })

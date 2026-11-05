@@ -806,13 +806,13 @@ export default function App() {
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const imgs = Array.from(files).filter(f => f.type.startsWith('image/'))
-    if (imgs.length) setOutputFormat(current => current === 'gif' ? 'png' : current)
+    if (imgs.length && selectedModel?.compatibility === 'gpt-image') setOutputFormat(current => current === 'gif' ? 'png' : current)
     setInputImages(cur => [...cur, ...imgs.map(f => ({ id: uid(), name: f.name, type: f.type || 'image/png', blob: f as Blob }))])
-  }, [])
+  }, [selectedModel?.compatibility])
 
   function addGridImageAsInput(img: ImageJob) {
     if (!img.blob) return
-    setOutputFormat(current => current === 'gif' ? 'png' : current)
+    if (selectedModel?.compatibility === 'gpt-image') setOutputFormat(current => current === 'gif' ? 'png' : current)
     setInputImages(cur => [...cur, {
       id: uid(),
       name: `generated-${img.id}.png`,
@@ -844,7 +844,7 @@ export default function App() {
     const reqAr = override?.aspectRatio ?? aspectRatio
     const reqResolution = override?.resolution ?? resolution
     const reqQuality = override?.quality ?? quality
-    const reqOutputFormat = canCustomizeOutput && !(override?.inputImages ?? inputImages).length
+    const reqOutputFormat = canCustomizeOutput && !(selectedModel.compatibility === 'gpt-image' && reqInputs.length)
       ? (override?.outputFormat ?? outputFormat)
       : undefined
     const reqFrameCount = Math.min(maxGifFrames, override?.frameCount ?? frameCount)
@@ -1290,7 +1290,7 @@ export default function App() {
                     <select
                       value={outputFormat}
                       disabled={!canCustomizeOutput}
-                      title={!canCustomizeOutput ? 'Output formats are not exposed by this adapter' : inputImages.length ? 'GIF is only available for text-to-image generation' : 'Returned file format'}
+                      title={!canCustomizeOutput ? 'Output formats are not exposed by this adapter' : inputImages.length && selectedModel?.compatibility === 'gpt-image' ? 'The direct OpenAI edit endpoint does not support GIF output' : 'Returned file format'}
                       onChange={e => {
                         const format = e.target.value as ImageOutputFormat
                         setOutputFormat(format)
@@ -1299,7 +1299,7 @@ export default function App() {
                       className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
                     >
                       {imageOutputFormats.map(format => (
-                        <option key={format} value={format} disabled={format === 'gif' && inputImages.length > 0}>
+                        <option key={format} value={format} disabled={format === 'gif' && inputImages.length > 0 && selectedModel?.compatibility === 'gpt-image'}>
                           {format.toUpperCase()}{format === 'gif' ? ' (animated)' : ''}
                         </option>
                       ))}

@@ -47,9 +47,6 @@ async function imageResponse(res: Response, provider: string): Promise<Blob> {
 export async function generateOpenAiImage({
   baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, quality, outputFormat, frameCount, frameDurationMs, transparency, disableSafety, inputs,
 }: ImageRequest & { inputs: ImageInput[] }): Promise<Blob> {
-  if (outputFormat === 'gif' && inputs.length) {
-    throw new Error('GIF output is only supported for text-to-image generation, not image edits.')
-  }
   const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, inputs.length > 0, 16)
   const base = (baseUrl?.trim() || 'https://api.openai.com').replace(/\/+$/, '')
   const headers = { Authorization: `Bearer ${apiKey}` }
@@ -122,9 +119,6 @@ async function openRouterSafety(base: string, apiKey: string, modelName: string)
 export async function generateOpenRouterImage({
   baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, quality, outputFormat, frameCount, frameDurationMs, transparency, disableSafety, imageUrls,
 }: ImageRequest & { imageUrls: string[] }): Promise<Blob> {
-  if (outputFormat === 'gif' && imageUrls.length) {
-    throw new Error('GIF output is only supported for text-to-image generation, not image edits.')
-  }
   const base = (baseUrl?.trim() || 'https://openrouter.ai').replace(/\/+$/, '')
   const safety = disableSafety ? await openRouterSafety(base, apiKey, modelName) : {}
   const res = await fetch(`${base}/api/v1/images`, {
@@ -135,7 +129,7 @@ export async function generateOpenRouterImage({
       prompt,
       n: 1,
       ...openRouterImageConfig(aspectRatio, resolution),
-      ...imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0),
+      ...imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0, 64, true),
       ...backgroundOptions(transparency, outputFormat),
       ...safety,
       ...(imageUrls.length ? {
