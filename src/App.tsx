@@ -844,8 +844,9 @@ export default function App() {
     const reqAr = override?.aspectRatio ?? aspectRatio
     const reqResolution = override?.resolution ?? resolution
     const reqQuality = override?.quality ?? quality
-    const reqOutputFormat = canCustomizeOutput && !(selectedModel.compatibility === 'gpt-image' && reqInputs.length)
-      ? (override?.outputFormat ?? outputFormat)
+    const requestedOutputFormat = override?.outputFormat ?? outputFormat
+    const reqOutputFormat = canCustomizeOutput && !(selectedModel.compatibility === 'gpt-image' && reqInputs.length && requestedOutputFormat === 'gif')
+      ? requestedOutputFormat
       : undefined
     const reqFrameCount = Math.min(maxGifFrames, override?.frameCount ?? frameCount)
     const reqFrameDurationMs = override?.frameDurationMs ?? frameDurationMs
