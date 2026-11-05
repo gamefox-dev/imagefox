@@ -1,4 +1,33 @@
 export type ImageResolution = '0.5K' | '1K' | '2K' | '4K'
+export type ImageQuality = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ImageOutputFormat = 'png' | 'jpeg' | 'webp' | 'gif'
+
+export type ImageOutputOptions = {
+  quality?: ImageQuality
+  outputFormat?: ImageOutputFormat
+  frameCount?: number
+  frameDurationMs?: number
+}
+
+// GIF output has a different pixel budget from still images; Auto sizing is
+// recommended, and the provider validates explicit per-frame dimensions.
+export function imageOutputOptions(options: ImageOutputOptions, hasInputs = false, maxFrames = 64) {
+  const { quality, outputFormat, frameCount = 9, frameDurationMs = 200 } = options
+  if (outputFormat === 'gif') {
+    if (hasInputs) throw new Error('GIF output is only supported for text-to-image generation, not image edits.')
+    if (!Number.isInteger(frameCount) || frameCount < 2 || frameCount > maxFrames) {
+      throw new Error(`GIF frame count must be an integer between 2 and ${maxFrames}.`)
+    }
+    if (!Number.isFinite(frameDurationMs) || frameDurationMs < 20 || frameDurationMs > 2000) {
+      throw new Error('GIF frame duration must be between 20 and 2000 ms.')
+    }
+  }
+  return {
+    ...(quality ? { quality } : {}),
+    ...(outputFormat ? { output_format: outputFormat } : {}),
+    ...(outputFormat === 'gif' ? { frame_count: frameCount, frame_duration_ms: Math.round(frameDurationMs / 10) * 10 } : {}),
+  }
+}
 
 export function openAiSize(ar: string, resolution: ImageResolution) {
   if (ar === 'auto') return 'auto'
@@ -39,9 +68,15 @@ export function openRouterImageConfig(ar: string, resolution: ImageResolution) {
   return ar === 'auto' ? {} : { aspect_ratio: ar, resolution: resolution === '0.5K' ? '512' : resolution }
 }
 
-export function backgroundOptions(transparency?: boolean): { background?: 'transparent' | 'opaque'; output_format?: 'png' } {
+export function backgroundOptions(
+  transparency?: boolean,
+  outputFormat?: ImageOutputFormat,
+): { background?: 'transparent' | 'opaque'; output_format?: 'png' | 'webp' } {
   if (transparency === undefined) return {}
-  return transparency ? { background: 'transparent', output_format: 'png' } : { background: 'opaque' }
+  if (transparency && outputFormat && outputFormat !== 'png' && outputFormat !== 'webp') {
+    throw new Error('Transparent backgrounds require PNG or WebP output. Choose an alpha-capable format or turn off transparency.')
+  }
+  return transparency ? { background: 'transparent', output_format: outputFormat === 'webp' ? 'webp' : 'png' } : { background: 'opaque' }
 }
 
 // Gemini's documented default matches input dimensions (or chooses a square

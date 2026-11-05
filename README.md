@@ -1,5 +1,19 @@
 # ImageFox
 
+## Model setup and autocomplete
+
+Model API keys are stored in IndexedDB with the rest of the local model settings. fal.ai and OpenRouter keys are additionally remembered in browser `localStorage`, so the API key field is prefilled when creating another model of the same type. API keys never leave the browser except in requests to the configured provider.
+
+The model name field has a **Load models** autocomplete. It queries the provider's model catalog endpoint: OpenAI `GET /v1/models`, Gemini `GET /v1beta/models`, OpenRouter `GET /api/v1/models`, or fal `GET https://api.fal.ai/v1/models`. OpenAI, Gemini, and OpenRouter require their API key; fal's catalog is public but the key is sent when available.
+
+## GPT Image 2.6 output options
+
+The default OpenAI model is `gpt-image-2.6`, which uses automatic routing. You can also configure `gpt-image-2.6-sunburst` for detailed work or `gpt-image-2.6-flare` for faster iteration. OpenRouter model IDs use the `openai/` prefix.
+
+The generation toolbar exposes the documented GPT Image 2.6 quality tiers: `auto`, `low`, `medium`, `high`, `xhigh`, and `max`. It also supports PNG, JPEG, WebP, and animated GIF output. GIF generation is text-to-image only and adds controls for 2–16 frames and 20–2000 ms frame duration on the OpenAI Images API; the API rounds frame duration to 10 ms. GIF output uses the documented default of 9 frames and 200 ms when unchanged.
+
+Quality and format controls are sent to OpenAI, OpenRouter, and fal GPT Image-compatible endpoints. Provider adapters that do not document these fields leave them disabled. GIF requests use `output_format: "gif"`, `frame_count`, and `frame_duration_ms`; edits reject GIF because the Image API does not support animated GIF output for edits.
+
 ## Transparency and safety options
 
 The generation toolbar has a **Transparency** selector:
@@ -23,8 +37,9 @@ In **Models → Add/Edit model**, **Disable / reduce safety** defaults to unchec
 | fal.ai | Sends `enable_safety_checker: false`. Only use for endpoints documenting this parameter (e.g. FLUX.1 dev). Disabling the checker requires fal account authorization; otherwise checks still run. Other upstream restrictions still apply. |
 | OpenRouter | Fetches the model's Images endpoint capabilities and sends `moderation: "low"` and/or `enable_safety_checker: false` under `provider.options[provider_slug]`, only when advertised in `allowed_passthrough_parameters`. Routing is limited to eligible providers. Unsupported models or failed capability lookups produce an error before generation rather than silently ignoring the option. |
 
-fal's GPT Image 2.5 schemas expose transparency but **no safety override**, so the
-safety checkbox is disabled for fal OpenAI endpoints. It is also disabled for the
+fal's GPT Image 2.6 schema exposes transparency, quality, GIF output, and an
+optional safety-checker override (subject to fal authorization). Older fal OpenAI
+endpoints may not support the safety override, so the checkbox remains disabled for them. It is also disabled for the
 direct Gemini adapter. OpenRouter's OpenAI GPT Image endpoints currently advertise
 `moderation`; its Gemini image endpoint does not advertise a supported safety
 control. Safety preferences persist with model settings and round-trip through YAML
@@ -33,15 +48,15 @@ as the optional boolean `disableSafety` (string values are rejected).
 Provider references:
 - [OpenAI image generation and moderation](https://developers.openai.com/api/docs/guides/image-generation)
 - [OpenAI image edits](https://developers.openai.com/api/reference/resources/images/methods/edit/)
-- [fal GPT Image 2.5 Flare generation schema](https://fal.ai/models/openai/gpt-image-2.5/flare/text-to-image/api)
-- [fal GPT Image 2.5 Flare edit schema](https://fal.ai/models/openai/gpt-image-2.5/flare/edit/api)
+- [fal GPT Image 2.6 Flare generation schema](https://fal.ai/models/openai/gpt-image-2.6/flare/text-to-image/api)
+- [fal GPT Image 2.6 Flare edit schema](https://fal.ai/models/openai/gpt-image-2.6/flare/edit/api)
 - [fal FLUX.1 dev safety checker](https://fal.ai/models/fal-ai/flux/dev/api)
 - [OpenRouter Images API and capability discovery](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
 
 ## OpenRouter Images API
 
 All OpenRouter generation requests now use **`POST /api/v1/images`**, including
-GPT Image 2.5 Flare/Sunburst and Gemini image models, rather than chat completions.
+GPT Image 2.6 Flare/Sunburst and Gemini image models, rather than chat completions.
 Reference images are passed as data URLs in `input_references`; output is decoded
 from `data[0].b64_json`, preserving `media_type` (PNG when omitted). Hosted image
 URLs are also supported and downloaded without API credentials.
@@ -57,8 +72,8 @@ capability API under `/api/v1/images/models/{model}/endpoints`.
 In **Models → Add model**, select **fal.ai**, enter your fal API key, and use an
 exact model endpoint ID (not the model page URL):
 
-- Image editing: `openai/gpt-image-2.5/flare/edit` (the default; requires input images).
-- Text-to-image: `openai/gpt-image-2.5/flare`.
+- Image editing: `openai/gpt-image-2.6/flare/edit` (the default; requires input images).
+- Text-to-image: `openai/gpt-image-2.6/flare/text-to-image`.
 - Other endpoints with the same schema, such as `fal-ai/flux/dev`, can also be configured.
 
 The endpoint is used as entered; adding images does not automatically append `/edit`,

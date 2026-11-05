@@ -1,5 +1,5 @@
-import { backgroundOptions, openAiSize, openRouterImageConfig } from './image-options.ts'
-import type { ImageResolution } from './image-options.ts'
+import { backgroundOptions, imageOutputOptions, openAiSize, openRouterImageConfig } from './image-options.ts'
+import type { ImageOutputFormat, ImageQuality, ImageResolution } from './image-options.ts'
 
 type ImageRequest = {
   baseUrl?: string
@@ -8,6 +8,10 @@ type ImageRequest = {
   prompt: string
   aspectRatio: string
   resolution: ImageResolution
+  quality?: ImageQuality
+  outputFormat?: ImageOutputFormat
+  frameCount?: number
+  frameDurationMs?: number
   transparency?: boolean
   disableSafety?: boolean
 }
@@ -41,12 +45,16 @@ async function imageResponse(res: Response, provider: string): Promise<Blob> {
 }
 
 export async function generateOpenAiImage({
-  baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, transparency, disableSafety, inputs,
+  baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, quality, outputFormat, frameCount, frameDurationMs, transparency, disableSafety, inputs,
 }: ImageRequest & { inputs: ImageInput[] }): Promise<Blob> {
+  if (outputFormat === 'gif' && inputs.length) {
+    throw new Error('GIF output is only supported for text-to-image generation, not image edits.')
+  }
+  const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, inputs.length > 0, 16)
   const base = (baseUrl?.trim() || 'https://api.openai.com').replace(/\/+$/, '')
   const headers = { Authorization: `Bearer ${apiKey}` }
   const options = {
-    ...backgroundOptions(transparency),
+    ...backgroundOptions(transparency, outputFormat),
     ...(disableSafety ? { moderation: 'low' } : {}),
   }
   let res: Response
@@ -56,7 +64,7 @@ export async function generateOpenAiImage({
     form.append('prompt', prompt)
     form.append('n', '1')
     form.append('size', openAiSize(aspectRatio, resolution))
-    for (const [key, value] of Object.entries(options)) form.append(key, value)
+    for (const [key, value] of Object.entries({ ...options, ...(quality ? { quality } : {}), ...outputOptions })) form.append(key, String(value))
     inputs.forEach((img, i) => {
       form.append('image[]', new File([img.blob], img.name || `input-${i}.png`, { type: img.type || img.blob.type || 'image/png' }))
     })
@@ -65,7 +73,14 @@ export async function generateOpenAiImage({
     res = await fetch(`${base}/v1/images/generations`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: modelName, prompt, n: 1, size: openAiSize(aspectRatio, resolution), ...options }),
+      body: JSON.stringify({
+        model: modelName,
+        prompt,
+        n: 1,
+        size: openAiSize(aspectRatio, resolution),
+        ...outputOptions,
+        ...options,
+      }),
     })
   }
   return imageResponse(res, 'OpenAI')
@@ -105,8 +120,11 @@ async function openRouterSafety(base: string, apiKey: string, modelName: string)
 }
 
 export async function generateOpenRouterImage({
-  baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, transparency, disableSafety, imageUrls,
+  baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, quality, outputFormat, frameCount, frameDurationMs, transparency, disableSafety, imageUrls,
 }: ImageRequest & { imageUrls: string[] }): Promise<Blob> {
+  if (outputFormat === 'gif' && imageUrls.length) {
+    throw new Error('GIF output is only supported for text-to-image generation, not image edits.')
+  }
   const base = (baseUrl?.trim() || 'https://openrouter.ai').replace(/\/+$/, '')
   const safety = disableSafety ? await openRouterSafety(base, apiKey, modelName) : {}
   const res = await fetch(`${base}/api/v1/images`, {
@@ -117,7 +135,8 @@ export async function generateOpenRouterImage({
       prompt,
       n: 1,
       ...openRouterImageConfig(aspectRatio, resolution),
-      ...backgroundOptions(transparency),
+      ...imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0),
+      ...backgroundOptions(transparency, outputFormat),
       ...safety,
       ...(imageUrls.length ? {
         input_references: imageUrls.map(url => ({ type: 'image_url', image_url: { url } })),

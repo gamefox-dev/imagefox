@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { falImageSize, formatDuration, geminiImageConfig, openAiSize, openRouterImageConfig } from '../src/image-options.ts'
+import { backgroundOptions, falImageSize, formatDuration, geminiImageConfig, imageOutputOptions, openAiSize, openRouterImageConfig } from '../src/image-options.ts'
 import type { ImageResolution } from '../src/image-options.ts'
 
 const resolutions: ImageResolution[] = ['0.5K', '1K', '2K', '4K']
@@ -31,6 +31,20 @@ test('explicit GPT Image dimensions stay within supported constraints', () => {
       assert.ok(Math.max(w, h) <= 3840)
     }
   }
+})
+
+test('passes quality and GIF animation options to image requests', () => {
+  assert.deepEqual(imageOutputOptions({ quality: 'xhigh', outputFormat: 'gif', frameCount: 12, frameDurationMs: 353 }), {
+    quality: 'xhigh', output_format: 'gif', frame_count: 12, frame_duration_ms: 350,
+  })
+  assert.deepEqual(openRouterImageConfig('auto', '1K'), {})
+  assert.deepEqual(backgroundOptions(true, 'webp'), { background: 'transparent', output_format: 'webp' })
+})
+
+test('rejects GIF edits and invalid GIF settings', () => {
+  assert.throws(() => imageOutputOptions({ outputFormat: 'gif' }, true), /only supported for text-to-image/)
+  assert.throws(() => imageOutputOptions({ outputFormat: 'gif', frameCount: 17 }, false, 16), /between 2 and 16/)
+  assert.throws(() => imageOutputOptions({ outputFormat: 'gif', frameDurationMs: 19 }), /between 20 and 2000/)
 })
 
 test('formats generation durations including rounding and minute/hour boundaries', () => {

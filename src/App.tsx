@@ -6,7 +6,8 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import { FAL_BASE_URL, FAL_DEFAULT_MODEL, generateFalImage } from './fal'
 import { falImageSize, formatDuration, geminiImageConfig } from './image-options'
 import { generateOpenAiImage, generateOpenRouterImage } from './image-api'
-import type { ImageResolution } from './image-options'
+import { fetchModelNames } from './model-catalog'
+import type { ImageOutputFormat, ImageQuality, ImageResolution } from './image-options'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,10 @@ type ImageJob = {
   durationMs?: number
   aspectRatio: string
   resolution: ImageResolution
+  quality?: ImageQuality
+  outputFormat?: ImageOutputFormat
+  frameCount?: number
+  frameDurationMs?: number
   transparency?: boolean
   modelSettingId: string
   inputImages: InputImage[]
@@ -67,6 +72,18 @@ type StudioDb = {
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 
 const DB_NAME = 'imagefox-studio'
+const API_KEY_STORAGE_PREFIX = 'imagefox-api-key:'
+const storedApiKey = (compatibility: ApiCompatibility) => {
+  if (compatibility !== 'fal' && compatibility !== 'openrouter') return ''
+  try { return localStorage.getItem(`${API_KEY_STORAGE_PREFIX}${compatibility}`) ?? '' } catch { return '' }
+}
+const rememberApiKey = (compatibility: ApiCompatibility, apiKey: string) => {
+  if (compatibility !== 'fal' && compatibility !== 'openrouter') return
+  try {
+    if (apiKey) localStorage.setItem(`${API_KEY_STORAGE_PREFIX}${compatibility}`, apiKey)
+    else localStorage.removeItem(`${API_KEY_STORAGE_PREFIX}${compatibility}`)
+  } catch { /* localStorage may be unavailable in private browsing */ }
+}
 const DB_VERSION = 1
 const STORE = 'state'
 const STATE_KEY = 'app'
@@ -109,6 +126,8 @@ const uid = () => crypto.randomUUID()
 const now = () => Date.now()
 const aspectRatios = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9']
 const imageResolutions: ImageResolution[] = ['0.5K', '1K', '2K', '4K']
+const imageQualities: ImageQuality[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
+const imageOutputFormats: ImageOutputFormat[] = ['png', 'jpeg', 'webp', 'gif']
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -177,6 +196,7 @@ function apiBase(setting: ModelSetting) {
 
 async function generateOneWithFal(
   setting: ModelSetting, prompt: string, ar: string, resolution: ImageResolution, inputs: InputImage[], transparency?: boolean,
+  quality?: ImageQuality, outputFormat?: ImageOutputFormat, frameCount?: number, frameDurationMs?: number,
 ): Promise<Blob> {
   return generateFalImage({
     baseUrl: setting.baseUrl,
@@ -186,6 +206,10 @@ async function generateOneWithFal(
     imageUrls: await Promise.all(inputs.map(img => blobToDataUrl(img.blob))),
     imageSize: falImageSize(ar, resolution),
     transparency,
+    quality,
+    outputFormat,
+    frameCount,
+    frameDurationMs,
     disableSafety: setting.disableSafety,
   })
 }
@@ -229,13 +253,16 @@ async function generateOneWithGemini(
 async function generateOneImage(
   setting: ModelSetting, prompt: string, ar: string,
   resolution: ImageResolution, inputs: InputImage[], transparency?: boolean,
+  quality?: ImageQuality, outputFormat?: ImageOutputFormat, frameCount?: number, frameDurationMs?: number,
 ): Promise<Blob> {
-  const request = { ...setting, prompt, aspectRatio: ar, resolution, transparency }
+  const request = { ...setting, prompt, aspectRatio: ar, resolution, transparency, quality, outputFormat, frameCount, frameDurationMs }
   if (setting.compatibility === 'gpt-image') return generateOpenAiImage({ ...request, inputs })
   if (setting.compatibility === 'openrouter') return generateOpenRouterImage({
     ...request, imageUrls: await Promise.all(inputs.map(img => blobToDataUrl(img.blob))),
   })
-  if (setting.compatibility === 'fal') return generateOneWithFal(setting, prompt, ar, resolution, inputs, transparency)
+  if (setting.compatibility === 'fal') return generateOneWithFal(
+    setting, prompt, ar, resolution, inputs, transparency, quality, outputFormat, frameCount, frameDurationMs,
+  )
   return generateOneWithGemini(setting, prompt, ar, resolution, inputs)
 }
 
@@ -301,17 +328,43 @@ function ModelModal({
   const [compatibility, setCompatibility] = useState<ApiCompatibility>(initial?.compatibility ?? 'gpt-image')
   const [name, setName] = useState(initial?.name ?? '')
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? '')
-  const [apiKey, setApiKey] = useState(initial?.apiKey ?? '')
+  const [apiKey, setApiKey] = useState(initial?.apiKey || storedApiKey(initial?.compatibility ?? 'gpt-image'))
   const [showKey, setShowKey] = useState(false)
-  const [modelName, setModelName] = useState(initial?.modelName ?? 'gpt-image-2')
+  const [modelName, setModelName] = useState(initial?.modelName ?? 'gpt-image-2.6')
+  const [modelSuggestions, setModelSuggestions] = useState<string[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState('')
+  const modelListId = useMemo(() => `model-list-${uid()}`, [])
   const [disableSafety, setDisableSafety] = useState(initial?.disableSafety ?? false)
-  const safetyUnavailable = compatibility === 'gemini' || (compatibility === 'fal' && modelName.trim().replace(/^\/+/, '').startsWith('openai/'))
+  const falEndpoint = modelName.trim().replace(/^\/+/, '')
+  const safetyUnavailable = compatibility === 'gemini' || (compatibility === 'fal' && falEndpoint.startsWith('openai/') && !falEndpoint.startsWith('openai/gpt-image-2.6/'))
+
+  async function loadModelSuggestions() {
+    setModelsLoading(true)
+    setModelsError('')
+    try {
+      const names = await fetchModelNames({
+        compatibility,
+        baseUrl,
+        apiKey,
+      })
+      setModelSuggestions(names)
+    } catch (err) {
+      setModelSuggestions([])
+      setModelsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setModelsLoading(false)
+    }
+  }
 
   function handleCompatibility(next: ApiCompatibility) {
     setCompatibility(next)
+    setModelSuggestions([])
+    setModelsError('')
     if (!initial) {
+      setApiKey(storedApiKey(next))
       const defaults: Record<ApiCompatibility, string> = {
-        'gpt-image': 'gpt-image-2',
+        'gpt-image': 'gpt-image-2.6',
         'gemini': 'gemini-3.1-flash-image',
         'openrouter': 'google/gemini-3.1-flash-image-preview',
         'fal': FAL_DEFAULT_MODEL,
@@ -320,9 +373,11 @@ function ModelModal({
     }
   }
 
+
   function submit(e: FormEvent) {
     e.preventDefault()
     const stamp = now()
+    rememberApiKey(compatibility, apiKey.trim())
     onSave({
       id: initial?.id ?? uid(),
       name: name.trim() || modelName,
@@ -378,7 +433,7 @@ function ModelModal({
               className={input}
             />
           </Field>
-          <Field label="API key">
+          <Field label="API key" hint={compatibility === 'fal' || compatibility === 'openrouter' ? 'Remembered in localStorage' : undefined}>
             <div className="relative">
               <input
                 required
@@ -402,8 +457,39 @@ function ModelModal({
             </div>
           </Field>
           <Field label={compatibility === 'fal' ? 'Model endpoint ID' : 'Model name'}>
-            <input required value={modelName} onChange={e => setModelName(e.target.value)} className={input} />
+            <div className="flex gap-2">
+              <input
+                required
+                list={modelListId}
+                value={modelName}
+                onChange={e => setModelName(e.target.value)}
+                onFocus={() => { if (!modelSuggestions.length && !modelsLoading && (compatibility === 'fal' || apiKey.trim())) void loadModelSuggestions() }}
+                className={`${input} min-w-0 flex-1`}
+              />
+              <button
+                type="button"
+                onClick={() => { void loadModelSuggestions() }}
+                disabled={modelsLoading || (compatibility !== 'fal' && !apiKey.trim())}
+                className="shrink-0 rounded-lg border border-zinc-700 px-2.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-50"
+              >
+                {modelsLoading ? 'Loading…' : 'Load models'}
+              </button>
+            </div>
+            <datalist id={modelListId}>
+              {modelSuggestions.map(name => <option key={name} value={name} />)}
+            </datalist>
+            {modelsError && <span className="text-xs leading-relaxed text-red-400">{modelsError}</span>}
+            {!modelsError && modelSuggestions.length > 0 && (
+              <span className="text-xs text-zinc-500">{modelSuggestions.length} models available for autocomplete.</span>
+            )}
           </Field>
+          {compatibility === 'gpt-image' && (
+            <p className="text-xs leading-relaxed text-zinc-400">
+              GPT Image 2.6 models: <code className="text-zinc-300">gpt-image-2.6</code> auto-routes, while
+              <code className="ml-1 text-zinc-300">gpt-image-2.6-sunburst</code> favors detail and
+              <code className="ml-1 text-zinc-300">gpt-image-2.6-flare</code> favors speed.
+            </p>
+          )}
           <label className="flex items-center gap-2 text-sm text-zinc-300">
             <input type="checkbox" checked={!safetyUnavailable && disableSafety} disabled={safetyUnavailable}
               onChange={e => setDisableSafety(e.target.checked)} className="accent-white" />
@@ -420,8 +506,9 @@ function ModelModal({
           </p>
           {compatibility === 'fal' && (
             <p className="text-xs leading-relaxed text-zinc-400">
-              Enter the exact endpoint ID, not a URL. For GPT Image 2.5, use
-              {' '}openai/gpt-image-2.5/flare for text-to-image or append /edit for image inputs.
+              Enter the exact endpoint ID, not a URL. For GPT Image 2.6, use
+              {' '}openai/gpt-image-2.6/flare/text-to-image for text-to-image or use
+              openai/gpt-image-2.6/flare/edit for image inputs.
               Endpoints are not switched automatically. Supports prompt, image_urls,
               image_size (width/height), and images output; available sizes vary by model.
             </p>
@@ -516,6 +603,7 @@ function ModelsPanel({
   settings,
   onAdd,
   onEdit,
+  onDuplicate,
   onRemove,
   onImport,
   onClose,
@@ -523,6 +611,7 @@ function ModelsPanel({
   settings: ModelSetting[]
   onAdd: () => void
   onEdit: (s: ModelSetting) => void
+  onDuplicate: (s: ModelSetting) => void
   onRemove: (id: string) => void
   onImport: (imported: ModelSetting[]) => void
   onClose: () => void
@@ -555,6 +644,7 @@ function ModelsPanel({
                 <div className="text-xs text-zinc-500">{m.modelName}</div>
               </div>
               <button onClick={() => onEdit(m)} className="text-xs text-zinc-400 hover:text-white">Edit</button>
+              <button onClick={() => onDuplicate(m)} className="text-xs text-zinc-400 hover:text-white">Duplicate</button>
               <button onClick={() => onRemove(m.id)} className="text-xs text-zinc-400 hover:text-red-400">Remove</button>
             </div>
           ))}
@@ -609,6 +699,10 @@ export default function App() {
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState('auto')
   const [resolution, setResolution] = useState<ImageResolution>('1K')
+  const [quality, setQuality] = useState<ImageQuality>('auto')
+  const [outputFormat, setOutputFormat] = useState<ImageOutputFormat>('png')
+  const [frameCount, setFrameCount] = useState(9)
+  const [frameDurationMs, setFrameDurationMs] = useState(200)
   const [transparency, setTransparency] = useState<boolean | undefined>(undefined)
   const [imageCount, setImageCount] = useState(1)
   const [inputImages, setInputImages] = useState<InputImage[]>([])
@@ -656,6 +750,8 @@ export default function App() {
     [state.images, project?.id],
   )
   const selectedModel = state.modelSettings.find(m => m.id === selectedModelId) ?? state.modelSettings[0]
+  const canCustomizeOutput = selectedModel?.compatibility === 'gpt-image' || selectedModel?.compatibility === 'openrouter' || selectedModel?.compatibility === 'fal'
+  const maxGifFrames = selectedModel?.compatibility === 'gpt-image' ? 16 : 64
 
   function updateState(fn: (s: StudioDb) => StudioDb) {
     setState(cur => fn(cur))
@@ -669,6 +765,19 @@ export default function App() {
     }))
     setSelectedModelId(setting.id)
     setModal({ kind: 'none' })
+  }
+
+  function duplicateModel(setting: ModelSetting) {
+    const stamp = now()
+    const duplicate: ModelSetting = {
+      ...setting,
+      id: uid(),
+      name: `${setting.name} copy`,
+      createdAt: stamp,
+      updatedAt: stamp,
+    }
+    updateState(s => ({ ...s, modelSettings: [...s.modelSettings, duplicate].sort((a, b) => a.createdAt - b.createdAt) }))
+    setSelectedModelId(duplicate.id)
   }
 
   function removeModel(id: string) {
@@ -697,11 +806,13 @@ export default function App() {
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const imgs = Array.from(files).filter(f => f.type.startsWith('image/'))
+    if (imgs.length) setOutputFormat(current => current === 'gif' ? 'png' : current)
     setInputImages(cur => [...cur, ...imgs.map(f => ({ id: uid(), name: f.name, type: f.type || 'image/png', blob: f as Blob }))])
   }, [])
 
   function addGridImageAsInput(img: ImageJob) {
     if (!img.blob) return
+    setOutputFormat(current => current === 'gif' ? 'png' : current)
     setInputImages(cur => [...cur, {
       id: uid(),
       name: `generated-${img.id}.png`,
@@ -713,7 +824,18 @@ export default function App() {
 
   async function submitGeneration(
     e?: FormEvent,
-    override?: { prompt: string; inputImages: InputImage[]; aspectRatio: string; resolution?: ImageResolution; transparency?: boolean; count?: number },
+    override?: {
+      prompt: string
+      inputImages: InputImage[]
+      aspectRatio: string
+      resolution?: ImageResolution
+      quality?: ImageQuality
+      outputFormat?: ImageOutputFormat
+      frameCount?: number
+      frameDurationMs?: number
+      transparency?: boolean
+      count?: number
+    },
   ) {
     e?.preventDefault()
     if (!project || !selectedModel) return
@@ -721,7 +843,15 @@ export default function App() {
     const reqInputs = override?.inputImages ?? inputImages
     const reqAr = override?.aspectRatio ?? aspectRatio
     const reqResolution = override?.resolution ?? resolution
-    const reqTransparency = selectedModel.compatibility === 'gemini' ? undefined : override ? override.transparency : transparency
+    const reqQuality = override?.quality ?? quality
+    const reqOutputFormat = canCustomizeOutput && !(override?.inputImages ?? inputImages).length
+      ? (override?.outputFormat ?? outputFormat)
+      : undefined
+    const reqFrameCount = Math.min(maxGifFrames, override?.frameCount ?? frameCount)
+    const reqFrameDurationMs = override?.frameDurationMs ?? frameDurationMs
+    const reqTransparency = selectedModel.compatibility === 'gemini' || reqOutputFormat === 'gif'
+      ? undefined
+      : override ? override.transparency : transparency
     const count = override?.count ?? imageCount
     if (!reqPrompt) return alert('Enter a prompt first.')
     const stamp = now()
@@ -729,7 +859,15 @@ export default function App() {
       id: uid(), projectId: project.id, status: 'loading',
       createdAt: stamp, updatedAt: stamp, prompt: reqPrompt,
       modelName: selectedModel.modelName,
-      aspectRatio: reqAr, resolution: reqResolution, transparency: reqTransparency, modelSettingId: selectedModel.id, inputImages: reqInputs,
+      aspectRatio: reqAr,
+      resolution: reqResolution,
+      quality: reqQuality,
+      outputFormat: reqOutputFormat,
+      frameCount: reqOutputFormat === 'gif' ? reqFrameCount : undefined,
+      frameDurationMs: reqOutputFormat === 'gif' ? reqFrameDurationMs : undefined,
+      transparency: reqTransparency,
+      modelSettingId: selectedModel.id,
+      inputImages: reqInputs,
     }))
     updateState(s => ({
       ...s,
@@ -742,7 +880,10 @@ export default function App() {
       const started = performance.now()
       let result: Partial<ImageJob>
       try {
-        const blob = await generateOneImage(selectedModel, reqPrompt, reqAr, reqResolution, reqInputs, reqTransparency)
+        const blob = await generateOneImage(
+          selectedModel, reqPrompt, reqAr, reqResolution, reqInputs, reqTransparency,
+          reqQuality, reqOutputFormat, reqFrameCount, reqFrameDurationMs,
+        )
         result = { status: 'generated', blob, mimeType: blob.type || 'image/png' }
       } catch (err) {
         result = { status: 'error', error: err instanceof Error ? err.message : String(err) }
@@ -762,6 +903,10 @@ export default function App() {
     setPrompt(img.prompt)
     setAspectRatio(img.aspectRatio)
     setResolution(img.resolution ?? '1K')
+    setQuality(img.quality ?? 'auto')
+    setOutputFormat(img.outputFormat ?? 'png')
+    setFrameCount(img.frameCount ?? 9)
+    setFrameDurationMs(img.frameDurationMs ?? 200)
     setTransparency(img.transparency)
     setInputImages(img.inputImages)
   }
@@ -794,6 +939,10 @@ export default function App() {
     setPrompt(img.prompt)
     setAspectRatio(img.aspectRatio)
     setResolution(img.resolution ?? '1K')
+    setQuality(img.quality ?? 'auto')
+    setOutputFormat(img.outputFormat ?? 'png')
+    setFrameCount(img.frameCount ?? 9)
+    setFrameDurationMs(img.frameDurationMs ?? 200)
     setTransparency(img.transparency)
   }
 
@@ -1124,11 +1273,73 @@ export default function App() {
                   </label>
 
                   <label className="flex items-center gap-2 text-xs text-zinc-500">
+                    Quality
+                    <select
+                      value={quality}
+                      disabled={!canCustomizeOutput}
+                      title={!canCustomizeOutput ? 'Quality is not exposed by this adapter' : 'Rendering quality; Auto lets the provider choose'}
+                      onChange={e => setQuality(e.target.value as ImageQuality)}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
+                    >
+                      {imageQualities.map(q => <option key={q} value={q}>{q === 'auto' ? 'Auto' : q}</option>)}
+                    </select>
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-zinc-500">
+                    Format
+                    <select
+                      value={outputFormat}
+                      disabled={!canCustomizeOutput}
+                      title={!canCustomizeOutput ? 'Output formats are not exposed by this adapter' : inputImages.length ? 'GIF is only available for text-to-image generation' : 'Returned file format'}
+                      onChange={e => {
+                        const format = e.target.value as ImageOutputFormat
+                        setOutputFormat(format)
+                        if (format === 'gif') setTransparency(undefined)
+                      }}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
+                    >
+                      {imageOutputFormats.map(format => (
+                        <option key={format} value={format} disabled={format === 'gif' && inputImages.length > 0}>
+                          {format.toUpperCase()}{format === 'gif' ? ' (animated)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {outputFormat === 'gif' && canCustomizeOutput && (
+                    <>
+                      <label className="flex items-center gap-2 text-xs text-zinc-500">
+                        Frames
+                        <input
+                          type="number"
+                          min={2}
+                          max={maxGifFrames}
+                          value={frameCount}
+                          onChange={e => setFrameCount(Math.min(maxGifFrames, Math.max(2, Number(e.target.value) || 2)))}
+                          className="w-14 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
+                        />
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-zinc-500">
+                        Frame ms
+                        <input
+                          type="number"
+                          min={20}
+                          max={2000}
+                          step={10}
+                          value={frameDurationMs}
+                          onChange={e => setFrameDurationMs(Math.min(2000, Math.max(20, Number(e.target.value) || 20)))}
+                          className="w-16 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  <label className="flex items-center gap-2 text-xs text-zinc-500">
                     Transparency
                     <select
                       value={transparency === undefined ? 'unspecified' : String(transparency)}
-                      disabled={selectedModel?.compatibility === 'gemini'}
-                      title={selectedModel?.compatibility === 'gemini' ? 'Not supported by the direct Gemini adapter' : 'Requires model support for background; true requests PNG output'}
+                      disabled={selectedModel?.compatibility === 'gemini' || outputFormat === 'gif'}
+                      title={selectedModel?.compatibility === 'gemini' ? 'Not supported by the direct Gemini adapter' : outputFormat === 'gif' ? 'GIF output cannot be transparent' : 'Requires model support for background; true requests PNG output'}
                       onChange={e => setTransparency(e.target.value === 'unspecified' ? undefined : e.target.value === 'true')}
                       className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
                     >
@@ -1154,7 +1365,18 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => { setPrompt(''); setInputImages([]); setAspectRatio('auto'); setResolution('1K'); setTransparency(undefined); setImageCount(1) }}
+                    onClick={() => {
+                      setPrompt('')
+                      setInputImages([])
+                      setAspectRatio('auto')
+                      setResolution('1K')
+                      setQuality('auto')
+                      setOutputFormat('png')
+                      setFrameCount(9)
+                      setFrameDurationMs(200)
+                      setTransparency(undefined)
+                      setImageCount(1)
+                    }}
                     className="text-xs text-zinc-600 hover:text-zinc-300"
                   >
                     Clear
@@ -1171,6 +1393,7 @@ export default function App() {
             settings={state.modelSettings}
             onAdd={() => setModal({ kind: 'add-model' })}
             onEdit={s => setModal({ kind: 'edit-model', setting: s })}
+            onDuplicate={duplicateModel}
             onRemove={id => { removeModel(id) }}
             onImport={imported => {
               updateState(s => ({

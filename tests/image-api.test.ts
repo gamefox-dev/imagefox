@@ -99,6 +99,18 @@ for (const transparency of [undefined, false, true]) {
   }
 }
 
+test('OpenAI sends quality and GIF animation settings for text generation', async t => {
+  t.mock.method(globalThis, 'fetch', async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse(init!.body as string)
+    assert.deepEqual({ quality: body.quality, output_format: body.output_format, frame_count: body.frame_count, frame_duration_ms: body.frame_duration_ms }, {
+      quality: 'max', output_format: 'gif', frame_count: 6, frame_duration_ms: 240,
+    })
+    return json({ data: [{ b64_json: 'aGVsbG8=', media_type: 'image/gif' }] })
+  })
+  const blob = await generateOpenAiImage({ ...options, quality: 'max', outputFormat: 'gif', frameCount: 6, frameDurationMs: 240, inputs: [] })
+  assert.equal(blob.type, 'image/gif')
+})
+
 test('OpenAI default safety is omitted and remote image download has no credentials', async t => {
   t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
     if (url === 'https://media.example/image.png') {

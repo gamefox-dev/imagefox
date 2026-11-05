@@ -1,7 +1,8 @@
-import { backgroundOptions } from './image-options.ts'
+import { backgroundOptions, imageOutputOptions } from './image-options.ts'
+import type { ImageOutputFormat, ImageQuality } from './image-options.ts'
 
 export const FAL_BASE_URL = 'https://queue.fal.run'
-export const FAL_DEFAULT_MODEL = 'openai/gpt-image-2.5/flare/edit'
+export const FAL_DEFAULT_MODEL = 'openai/gpt-image-2.6/flare/edit'
 
 type FalImageRequest = {
   baseUrl?: string
@@ -11,6 +12,10 @@ type FalImageRequest = {
   imageUrls: string[]
   imageSize: 'auto' | { width: number; height: number }
   transparency?: boolean
+  quality?: ImageQuality
+  outputFormat?: ImageOutputFormat
+  frameCount?: number
+  frameDurationMs?: number
   disableSafety?: boolean
 }
 
@@ -28,15 +33,16 @@ type FalOutput = {
 // Use the queue rather than holding a single inference connection open. Endpoint
 // IDs are used verbatim: edit paths differ between models and cannot be inferred.
 export async function generateFalImage({
-  baseUrl, apiKey, modelName, prompt, imageUrls, imageSize, transparency, disableSafety,
+  baseUrl, apiKey, modelName, prompt, imageUrls, imageSize, transparency, quality, outputFormat, frameCount, frameDurationMs, disableSafety,
 }: FalImageRequest): Promise<Blob> {
   const base = (baseUrl?.trim() || FAL_BASE_URL).replace(/\/+$/, '')
   const endpoint = modelName.trim().replace(/^\/+|\/+$/g, '')
   if (!/^[\w-]+(?:\/[\w.-]+)+$/.test(endpoint) || endpoint.split('/').some(p => p === '.' || p === '..')) {
-    throw new Error('fal.ai model name must be an endpoint ID, e.g. openai/gpt-image-2.5/flare/edit (not a URL).')
+    throw new Error('fal.ai model name must be an endpoint ID, e.g. openai/gpt-image-2.6/flare/edit (not a URL).')
   }
 
-  if (disableSafety && endpoint.startsWith('openai/')) {
+  const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0)
+  if (disableSafety && endpoint.startsWith('openai/') && !endpoint.startsWith('openai/gpt-image-2.6/')) {
     throw new Error('fal OpenAI endpoints do not document a safety override. Turn off “Disable / reduce safety” in Models.')
   }
 
@@ -76,7 +82,8 @@ export async function generateFalImage({
       ...(imageUrls.length ? { image_urls: imageUrls } : {}),
       image_size: imageSize,
       num_images: 1,
-      ...backgroundOptions(transparency),
+      ...outputOptions,
+      ...backgroundOptions(transparency, outputFormat),
       ...(disableSafety ? { enable_safety_checker: false } : {}),
     })
     const statusUrl = queueUrl(status.status_url)
