@@ -7,6 +7,7 @@ import { FAL_BASE_URL, FAL_DEFAULT_MODEL, falModelEndpoint, generateFalImage } f
 import { falImageSize, formatDuration, geminiImageConfig } from './image-options'
 import { generateOpenAiImage, generateOpenRouterImage } from './image-api'
 import { fetchModelNames } from './model-catalog'
+import { NumberInput } from './NumberInput'
 import type { ImageOutputFormat, ImageQuality, ImageResolution } from './image-options'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -808,13 +809,11 @@ export default function App() {
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const imgs = Array.from(files).filter(f => f.type.startsWith('image/'))
-    if (imgs.length && selectedModel?.compatibility === 'gpt-image') setOutputFormat(current => current === 'gif' ? 'png' : current)
     setInputImages(cur => [...cur, ...imgs.map(f => ({ id: uid(), name: f.name, type: f.type || 'image/png', blob: f as Blob }))])
-  }, [selectedModel?.compatibility])
+  }, [])
 
   function addGridImageAsInput(img: ImageJob) {
     if (!img.blob) return
-    if (selectedModel?.compatibility === 'gpt-image') setOutputFormat(current => current === 'gif' ? 'png' : current)
     setInputImages(cur => [...cur, {
       id: uid(),
       name: `generated-${img.id}.png`,
@@ -846,10 +845,7 @@ export default function App() {
     const reqAr = override?.aspectRatio ?? aspectRatio
     const reqResolution = override?.resolution ?? resolution
     const reqQuality = override?.quality ?? quality
-    const requestedOutputFormat = override?.outputFormat ?? outputFormat
-    const reqOutputFormat = canCustomizeOutput && !(selectedModel.compatibility === 'gpt-image' && reqInputs.length && requestedOutputFormat === 'gif')
-      ? requestedOutputFormat
-      : undefined
+    const reqOutputFormat = canCustomizeOutput ? (override?.outputFormat ?? outputFormat) : undefined
     const reqFrameCount = Math.min(maxGifFrames, override?.frameCount ?? frameCount)
     const reqFrameDurationMs = override?.frameDurationMs ?? frameDurationMs
     const reqTransparency = selectedModel.compatibility === 'gemini' || reqOutputFormat === 'gif'
@@ -1295,7 +1291,7 @@ export default function App() {
                     <select
                       value={outputFormat}
                       disabled={!canCustomizeOutput}
-                      title={!canCustomizeOutput ? 'Output formats are not exposed by this adapter' : inputImages.length && selectedModel?.compatibility === 'gpt-image' ? 'The direct OpenAI edit endpoint does not support GIF output' : 'Returned file format'}
+                      title={!canCustomizeOutput ? 'Output formats are not exposed by this adapter' : 'Returned file format; requires support from the selected provider/model'}
                       onChange={e => {
                         const format = e.target.value as ImageOutputFormat
                         setOutputFormat(format)
@@ -1304,7 +1300,7 @@ export default function App() {
                       className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none disabled:opacity-40"
                     >
                       {imageOutputFormats.map(format => (
-                        <option key={format} value={format} disabled={format === 'gif' && inputImages.length > 0 && selectedModel?.compatibility === 'gpt-image'}>
+                        <option key={format} value={format}>
                           {format.toUpperCase()}{format === 'gif' ? ' (animated)' : ''}
                         </option>
                       ))}
@@ -1315,24 +1311,22 @@ export default function App() {
                     <>
                       <label className="flex items-center gap-2 text-xs text-zinc-500">
                         Frames
-                        <input
-                          type="number"
+                        <NumberInput
                           min={2}
                           max={maxGifFrames}
                           value={frameCount}
-                          onChange={e => setFrameCount(Math.min(maxGifFrames, Math.max(2, Number(e.target.value) || 2)))}
+                          onValueChange={setFrameCount}
                           className="w-14 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
                         />
                       </label>
                       <label className="flex items-center gap-2 text-xs text-zinc-500">
                         Frame ms
-                        <input
-                          type="number"
+                        <NumberInput
                           min={20}
                           max={2000}
                           step={10}
                           value={frameDurationMs}
-                          onChange={e => setFrameDurationMs(Math.min(2000, Math.max(20, Number(e.target.value) || 20)))}
+                          onValueChange={setFrameDurationMs}
                           className="w-16 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none"
                         />
                       </label>

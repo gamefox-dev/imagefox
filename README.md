@@ -6,13 +6,22 @@ Model API keys are stored in IndexedDB with the rest of the local model settings
 
 The model name field has a **Load models** autocomplete. It queries the provider's model catalog endpoint: OpenAI `GET /v1/models`, Gemini `GET /v1beta/models`, OpenRouter `GET /api/v1/models`, or fal `GET https://api.fal.ai/v1/models`. OpenAI, Gemini, and OpenRouter require their API key; fal's catalog is public but the key is sent when available.
 
+## Numeric controls
+
+GIF frame count and frame duration use a reusable React `NumberInput`. You can clear
+the field or type an intermediate/out-of-range value without the text jumping on
+every keystroke. Complete numbers update a valid underlying numeric state; empty or
+invalid drafts keep the last valid number. On blur (or Enter), the displayed text
+is normalized to the range and step. Arrow Up/Down adjusts by one step. External
+changes such as Clear, redo, or provider limits replace stale drafts.
+
 ## GPT Image 2.6 output options
 
 The default OpenAI model is `gpt-image-2.6`, which uses automatic routing. You can also configure `gpt-image-2.6-sunburst` for detailed work or `gpt-image-2.6-flare` for faster iteration. OpenRouter model IDs use the `openai/` prefix.
 
 The generation toolbar exposes the documented GPT Image 2.6 quality tiers: `auto`, `low`, `medium`, `high`, `xhigh`, and `max`. It also supports PNG, JPEG, WebP, and animated GIF output. GIF generation adds controls for 2–16 frames and 20–2000 ms frame duration on the OpenAI Images API (the API rounds frame duration to 10 ms); OpenRouter and fal support GIFs with image references where their model endpoint supports it. GIF output uses the documented default of 9 frames and 200 ms when unchanged.
 
-Quality and format controls are sent to OpenAI, OpenRouter, and fal GPT Image-compatible endpoints. Provider adapters that do not document these fields leave them disabled. Direct OpenAI image edits cannot return GIFs because the OpenAI Image edit endpoint does not support animated GIF output; OpenRouter and fal image-reference requests use their image API capabilities.
+Quality and format controls are sent to OpenAI, OpenRouter, and fal GPT Image-compatible endpoints. Provider adapters that do not document these fields leave them disabled. Selecting GIF explicitly sends `output_format: "gif"`, `frame_count`, and `frame_duration_ms` for both text-only and image-reference requests. Adding images never resets GIF to PNG or silently drops the selected format. The selected endpoint must support GIF edits; unsupported provider requests surface an error instead of silently requesting a still.
 
 ## Transparency and safety options
 

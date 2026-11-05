@@ -111,6 +111,45 @@ test('OpenAI sends quality and GIF animation settings for text generation', asyn
   assert.equal(blob.type, 'image/gif')
 })
 
+test('OpenAI-compatible image edits explicitly send GIF format, references and animation settings', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    assert.equal(url, 'https://proxy.example/v1/images/edits')
+    const form = init!.body as FormData
+    assert.ok(form instanceof FormData)
+    assert.equal(form.get('output_format'), 'gif')
+    assert.equal(form.get('quality'), 'high')
+    assert.equal(form.get('frame_count'), '9')
+    assert.equal(form.get('frame_duration_ms'), '350')
+    assert.ok(form.get('image[]') instanceof File)
+    assert.equal((init!.headers as Record<string, string>)['Content-Type'], undefined)
+    return json({ data: [{ b64_json: 'aGVsbG8=' }], output_format: 'gif' })
+  })
+  const blob = await generateOpenAiImage({
+    ...options, baseUrl: 'https://proxy.example', modelName: 'gpt-image-2.6-flare',
+    quality: 'high', outputFormat: 'gif', frameCount: 9, frameDurationMs: 350,
+    inputs: [{ blob: new Blob(['input']), name: 'reference.png', type: 'image/png' }],
+  })
+  assert.equal(blob.type, 'image/gif')
+})
+
+test('OpenRouter image references retain GIF output and animation settings', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    assert.equal(url, 'https://openrouter.ai/api/v1/images')
+    const body = JSON.parse(init!.body as string)
+    assert.equal(body.output_format, 'gif')
+    assert.equal(body.frame_count, 9)
+    assert.equal(body.frame_duration_ms, 350)
+    assert.deepEqual(body.input_references, [{ type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }])
+    return json({ data: [{ b64_json: 'aGVsbG8=', media_type: 'image/gif' }] })
+  })
+  const blob = await generateOpenRouterImage({
+    ...options, modelName: 'openai/gpt-image-2.6-flare',
+    outputFormat: 'gif', frameCount: 9, frameDurationMs: 350,
+    imageUrls: ['data:image/png;base64,aGVsbG8='],
+  })
+  assert.equal(blob.type, 'image/gif')
+})
+
 test('OpenAI default safety is omitted and remote image download has no credentials', async t => {
   t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
     if (url === 'https://media.example/image.png') {

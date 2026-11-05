@@ -47,7 +47,7 @@ async function imageResponse(res: Response, provider: string): Promise<Blob> {
 export async function generateOpenAiImage({
   baseUrl, apiKey, modelName, prompt, aspectRatio, resolution, quality, outputFormat, frameCount, frameDurationMs, transparency, disableSafety, inputs,
 }: ImageRequest & { inputs: ImageInput[] }): Promise<Blob> {
-  const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, inputs.length > 0, 16)
+  const outputOptions = imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, 16)
   const base = (baseUrl?.trim() || 'https://api.openai.com').replace(/\/+$/, '')
   const headers = { Authorization: `Bearer ${apiKey}` }
   const options = {
@@ -129,7 +129,7 @@ export async function generateOpenRouterImage({
       prompt,
       n: 1,
       ...openRouterImageConfig(aspectRatio, resolution),
-      ...imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }, imageUrls.length > 0, 64, true),
+      ...imageOutputOptions({ quality, outputFormat, frameCount, frameDurationMs }),
       ...backgroundOptions(transparency, outputFormat),
       ...safety,
       ...(imageUrls.length ? {

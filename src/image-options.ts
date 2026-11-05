@@ -11,10 +11,9 @@ export type ImageOutputOptions = {
 
 // GIF output has a different pixel budget from still images; Auto sizing is
 // recommended, and the provider validates explicit per-frame dimensions.
-export function imageOutputOptions(options: ImageOutputOptions, hasInputs = false, maxFrames = 64, allowGifWithInputs = false) {
+export function imageOutputOptions(options: ImageOutputOptions, maxFrames = 64) {
   const { quality, outputFormat, frameCount = 9, frameDurationMs = 200 } = options
   if (outputFormat === 'gif') {
-    if (hasInputs && !allowGifWithInputs) throw new Error('This adapter does not support GIF output with image references.')
     if (!Number.isInteger(frameCount) || frameCount < 2 || frameCount > maxFrames) {
       throw new Error(`GIF frame count must be an integer between 2 and ${maxFrames}.`)
     }
